@@ -2,7 +2,7 @@
 set -euo pipefail
 
 APP_NAME="Easy Minecraft Server Installer"
-APP_VERSION="1.0.0"
+APP_VERSION="1.0.1"
 
 VERSIONS=(
   26.3 26.2 26.1.2 26.1.1 26.1
@@ -81,10 +81,131 @@ need_cmd() {
 }
 
 need_cmd curl
-need_cmd python3
 
 TMP_DIR=$(mktemp -d) || die "Could not create a temporary directory."
 trap 'rm -rf "$TMP_DIR"' EXIT
+
+compact_json() {
+  tr -d '[:space:]' < "$1"
+}
+
+manifest_url() {
+  compact_json "$1" \
+    | tr '}' '\n' \
+    | grep -F "\"id\":\"$2\"" \
+    | head -n1 \
+    | sed -n 's/.*"url":"\([^"]*\)".*/\1/p' || true
+}
+
+mc_server_url() {
+  compact_json "$1" \
+    | grep -o '"server":{[^}]*}' \
+    | head -n1 \
+    | sed -n 's/.*"url":"\([^"]*\)".*/\1/p' || true
+}
+
+mc_java_major() {
+  compact_json "$1" \
+    | grep -o '"javaVersion":{[^}]*}' \
+    | head -n1 \
+    | sed -n 's/.*"majorVersion":\([0-9]*\).*/\1/p' || true
+}
+
+fabric_loader_version() {
+  local compact first_any="" first_stable="" obj ver
+  compact=$(compact_json "$1")
+  while IFS= read -r obj; do
+    ver=$(printf '%s' "$obj" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
+    [[ -n "$ver" ]] || continue
+    if [[ -z "$first_any" ]]; then first_any=$ver; fi
+    if [[ "$obj" == *'"stable":true'* ]]; then
+      first_stable=$ver
+      break
+    fi
+  done < <(printf '%s' "$compact" | grep -o '"loader":{[^}]*}')
+  printf '%s\n' "${first_stable:-$first_any}"
+}
+
+fabric_installer_version() {
+  local compact first_any="" first_stable="" obj ver
+  compact=$(compact_json "$1")
+  while IFS= read -r obj; do
+    ver=$(printf '%s' "$obj" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
+    [[ -n "$ver" ]] || continue
+    if [[ -z "$first_any" ]]; then first_any=$ver; fi
+    if [[ "$obj" == *'"stable":true'* ]]; then
+      first_stable=$ver
+      break
+    fi
+  done < <(printf '%s' "$compact" | grep -o '{[^{}]*}')
+  printf '%s\n' "${first_stable:-$first_any}"
+}
+
+forge_promoted_version() {
+  local compact key key_re line
+  compact=$(compact_json "$1")
+  key="$2-recommended"
+  key_re=${key//./\\.}
+  line=$(printf '%s' "$compact" | grep -o "\"${key_re}\":\"[^\"]*\"" | head -n1 || true)
+  if [[ -z "$line" ]]; then
+    key="$2-latest"
+    key_re=${key//./\\.}
+    line=$(printf '%s' "$compact" | grep -o "\"${key_re}\":\"[^\"]*\"" | head -n1 || true)
+  fi
+  printf '%s\n' "$line" | sed 's/^[^:]*:"//; s/"$//'
+}
+
+neoforge_build_version() {
+  local xml=$1 mc=$2 prefix base
+  if [[ "$mc" == "1.20.1" ]]; then
+    prefix="1.20.1-"
+  elif [[ "$mc" == 1.* ]]; then
+    base=${mc#1.}
+    if [[ "$base" != *.* ]]; then base="$base.0"; fi
+    prefix="$base."
+  else
+    if [[ "$mc" == *.*.* ]]; then
+      prefix="$mc."
+    else
+      prefix="$mc.0."
+    fi
+  fi
+  grep -o '<version>[^<]*</version>' "$xml" \
+    | sed 's/<[^>]*>//g' \
+    | awk -v p="$prefix" 'index($0,p)==1' \
+    | grep -Ev -- '-(beta|alpha)|snapshot' \
+    | awk -F. '{print $NF "\t" $0}' \
+    | sort -k1,1n \
+    | tail -n1 \
+    | cut -f2- || true
+}
+
+adoptium_package_field() {
+  local compact pkg
+  compact=$(compact_json "$1")
+  pkg=$(printf '%s' "$compact" | grep -o '"package":{[^}]*}' | head -n1 || true)
+  if [[ "$2" == "size" ]]; then
+    printf '%s\n' "$pkg" | sed -n 's/.*"size":\([0-9]*\).*/\1/p'
+  else
+    printf '%s\n' "$pkg" | sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p"
+  fi
+}
+
+sha256_of() {
+  local file=$1 out
+  if command -v sha256sum >/dev/null 2>&1; then
+    out=$(sha256sum "$file") || return 1
+    printf '%s\n' "${out%% *}"
+  elif command -v shasum >/dev/null 2>&1; then
+    out=$(shasum -a 256 "$file") || return 1
+    printf '%s\n' "${out%% *}"
+  elif command -v openssl >/dev/null 2>&1; then
+    out=$(openssl dgst -sha256 "$file") || return 1
+    printf '%s\n' "${out##* }"
+  else
+    return 1
+  fi
+}
 
 _ac_complete() {
   local line=$READLINE_LINE
@@ -244,42 +365,16 @@ fetch_mc_meta() {
   local manifest="$TMP_DIR/manifest.json"
   local meta_url
   curl -fsSL --retry 3 "$MANIFEST_URL" -o "$manifest" || die "Could not download the Mojang manifest."
-  meta_url=$(python3 - "$manifest" "$VERSION" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as handle:
-    data = json.load(handle)
-for entry in data.get("versions", []):
-    if entry.get("id") == sys.argv[2] and entry.get("type") == "release":
-        print(entry["url"])
-        break
-PY
-) || meta_url=""
+  meta_url=$(manifest_url "$manifest" "$VERSION")
   [[ -n "$meta_url" ]] || die "Version $VERSION was not found in the Mojang manifest."
   MC_META="$TMP_DIR/mc-$VERSION.json"
   curl -fsSL --retry 3 "$meta_url" -o "$MC_META" || die "Could not download metadata for $VERSION."
-  JAVA_REQUIRED=$(python3 - "$MC_META" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as handle:
-    data = json.load(handle)
-print(data.get("javaVersion", {}).get("majorVersion", ""))
-PY
-) || JAVA_REQUIRED=""
+  JAVA_REQUIRED=$(mc_java_major "$MC_META")
 }
 
 resolve_vanilla() {
-  JAR_URL=$(python3 - "$MC_META" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as handle:
-    data = json.load(handle)
-print(data["downloads"]["server"]["url"])
-PY
-) || die "Vanilla server URL not found for $VERSION."
+  JAR_URL=$(mc_server_url "$MC_META")
+  [[ -n "$JAR_URL" ]] || die "Vanilla server URL not found for $VERSION."
   JAR_NAME="server.jar"
   LOADER_DETAIL="Vanilla"
 }
@@ -290,29 +385,11 @@ resolve_fabric() {
   local loader installer
   curl -fsSL --retry 3 "${FABRIC_LOADER_URL}/${VERSION}" -o "$loader_json" 2>/dev/null \
     || die "Fabric does not support Minecraft $VERSION."
-  loader=$(python3 - "$loader_json" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as handle:
-    data = json.load(handle)
-if not data:
-    sys.exit(1)
-stable = [entry["loader"] for entry in data if entry.get("loader", {}).get("stable")]
-print((stable or [data[0]["loader"]])[0]["version"])
-PY
-) || die "No Fabric loader is available for Minecraft $VERSION."
+  loader=$(fabric_loader_version "$loader_json")
+  [[ -n "$loader" ]] || die "No Fabric loader is available for Minecraft $VERSION."
   curl -fsSL --retry 3 "$FABRIC_INSTALLER_URL" -o "$installer_json" || die "Could not fetch the Fabric installer."
-  installer=$(python3 - "$installer_json" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as handle:
-    data = json.load(handle)
-stable = [entry for entry in data if entry.get("stable")]
-print((stable or data)[0]["version"])
-PY
-) || die "Fabric installer version not found."
+  installer=$(fabric_installer_version "$installer_json")
+  [[ -n "$installer" ]] || die "Fabric installer version not found."
   JAR_URL="${FABRIC_LOADER_URL}/${VERSION}/${loader}/${installer}/server/jar"
   JAR_NAME="fabric-server-mc.${VERSION}-loader.${loader}-launcher.${installer}.jar"
   LOADER_DETAIL="Fabric loader ${loader} (installer ${installer})"
@@ -322,16 +399,7 @@ resolve_forge() {
   local promos="$TMP_DIR/forge-promos.json"
   local fv
   curl -fsSL --retry 3 "$FORGE_PROMOS_URL" -o "$promos" || die "Could not fetch Forge versions."
-  fv=$(python3 - "$promos" "$VERSION" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as handle:
-    promos = json.load(handle).get("promos", {})
-mc = sys.argv[2]
-print(promos.get(mc + "-recommended") or promos.get(mc + "-latest") or "")
-PY
-) || fv=""
+  fv=$(forge_promoted_version "$promos" "$VERSION")
   [[ -n "$fv" ]] || die "Forge has no build for Minecraft $VERSION."
   JAR_URL="https://maven.minecraftforge.net/net/minecraftforge/forge/${VERSION}-${fv}/forge-${VERSION}-${fv}-installer.jar"
   JAR_NAME="forge-${VERSION}-${fv}-installer.jar"
@@ -349,36 +417,7 @@ resolve_neoforge() {
     xml="$TMP_DIR/neoforge.xml"
     curl -fsSL --retry 3 "${NEOFORGE_MAVEN}/neoforge/maven-metadata.xml" -o "$xml" || die "Could not fetch NeoForge versions."
   fi
-  fv=$(python3 - "$xml" "$VERSION" <<'PY'
-import re
-import sys
-
-mc = sys.argv[2]
-if mc == "1.20.1":
-    prefix = "1.20.1-"
-elif mc.startswith("1."):
-    base = mc[2:]
-    if "." not in base:
-        base += ".0"
-    prefix = base + "."
-else:
-    prefix = mc + (".0." if mc.count(".") == 1 else ".")
-
-with open(sys.argv[1], encoding="utf-8") as handle:
-    xml = handle.read()
-versions = re.findall(r"<version>([^<]+)</version>", xml)
-eligible = []
-for version in versions:
-    low = version.lower()
-    if not version.startswith(prefix):
-        continue
-    if "-beta" in low or "-alpha" in low or "snapshot" in low:
-        continue
-    eligible.append(version)
-eligible.sort(key=lambda value: tuple(int(x) for x in re.findall(r"\d+", value)))
-print(eligible[-1] if eligible else "")
-PY
-) || fv=""
+  fv=$(neoforge_build_version "$xml" "$VERSION")
   [[ -n "$fv" ]] || die "NeoForge has no stable build for Minecraft $VERSION (1.20.1 minimum; some versions are not supported)."
   if [[ "$artifact" == "forge" ]]; then
     JAR_URL="${NEOFORGE_MAVEN}/forge/${fv}/forge-${fv}-installer.jar"
@@ -488,44 +527,17 @@ download_local_jdk() {
   api_url="${ADOPTIUM_ASSETS_URL}/${feature}/hotspot?architecture=${arch}&image_type=jdk&os=linux&vendor=eclipse"
   json="$TMP_DIR/adoptium-${feature}.json"
   curl -fsSL --retry 3 "$api_url" -o "$json" || die "The Adoptium API is unreachable."
-  meta=$(python3 - "$json" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as handle:
-    data = json.load(handle)
-for entry in data:
-    package = entry.get("binary", {}).get("package", {})
-    name = package.get("name", "")
-    if name.endswith(".tar.gz"):
-        print("\t".join([
-            package.get("link", ""),
-            package.get("checksum", ""),
-            name,
-            str(package.get("size", 0)),
-        ]))
-        break
-PY
-) || meta=""
-  [[ -n "$meta" ]] || die "No Temurin ${feature} JDK is available for this platform."
-  IFS=$'\t' read -r link checksum filename size <<<"$meta"
-  [[ -n "$link" && -n "$checksum" ]] || die "Incomplete JDK metadata."
+  link=$(adoptium_package_field "$json" "link")
+  checksum=$(adoptium_package_field "$json" "checksum")
+  filename=$(adoptium_package_field "$json" "name")
+  size=$(adoptium_package_field "$json" "size")
+  [[ -n "$link" && -n "$checksum" ]] || die "No Temurin ${feature} JDK is available for this platform."
 
   archive="$SERVER_DIR/.jdk.tar.gz"
   log "Downloading ${filename} ($(( size / 1048576 )) MB)..."
   curl -fL --retry 3 --progress-bar -o "$archive" "$link" || die "JDK download failed."
 
-  actual=$(python3 - "$archive" <<'PY'
-import hashlib
-import sys
-
-digest = hashlib.sha256()
-with open(sys.argv[1], "rb") as handle:
-    for chunk in iter(lambda: handle.read(1048576), b""):
-        digest.update(chunk)
-print(digest.hexdigest())
-PY
-) || actual=""
+  actual=$(sha256_of "$archive") || die "No SHA-256 tool found (sha256sum, shasum, or openssl)."
   if [[ "$actual" != "$checksum" ]]; then
     rm -f "$archive"
     die "Invalid SHA-256 checksum for the downloaded JDK."
