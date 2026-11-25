@@ -15,7 +15,6 @@ It asks for a server name, a Minecraft release, and a mod loader, then downloads
 - Creates `eula.txt` and a `run.sh` launcher
 - Clear errors for unsupported version/loader combinations
 - Nothing is bundled: everything is fetched on demand
-- No Python or `jq` dependency; everything is handled in Bash
 
 ## Requirements
 
@@ -23,8 +22,6 @@ It asks for a server name, a Minecraft release, and a mod loader, then downloads
 - `bash`
 - `curl`
 - `tar` (only when the automatic JDK download is used)
-- Standard Unix tools: `grep`, `sed`, `awk`, `sort`, and `tr`
-- A SHA-256 tool: `sha256sum`, `shasum`, or `openssl` (only for the automatic JDK download)
 - Java 8, 11, 17, 21, or 25 depending on the Minecraft version, or accept the local JDK download
 
 ## Usage

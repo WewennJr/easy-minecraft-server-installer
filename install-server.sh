@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
+#
+# Easy Minecraft Server Installer
+# Creates a ready-to-run Minecraft server (vanilla, Fabric, Forge, NeoForge)
+# by downloading the correct files from official sources and preparing the folder.
+#
 set -euo pipefail
 
 APP_NAME="Easy Minecraft Server Installer"
-APP_VERSION="1.0.1"
+APP_VERSION="1.1"
 
 VERSIONS=(
   26.3 26.2 26.1.2 26.1.1 26.1
