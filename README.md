@@ -64,8 +64,8 @@ Examples:
 | -------- | -------------- | ------------------------------------ |
 | Vanilla  | Mojang         | Official server jar                  |
 | Fabric   | FabricMC       | Downloads the Fabric server launcher |
-| Forge    | MinecraftForge | Runs the official installer          |
-| NeoForge | NeoForged      | Runs the official installer; 1.20.1+ |
+| Forge    | MinecraftForge | Classic modding platform             |
+| NeoForge | NeoForged      | Modern Forge fork; 1.20.1+           |
 
 Some loader/version combinations are not published by the loader authors. The script detects this and stops with a clear error instead of downloading something invalid.
 
