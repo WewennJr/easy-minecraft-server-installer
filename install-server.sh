@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+APP_NAME="Easy Minecraft Server Installer"
+APP_VERSION="1.0.0"
+
 VERSIONS=(
   26.3 26.2 26.1.2 26.1.1 26.1
   1.21.11 1.21.10 1.21.9 1.21.8 1.21.7 1.21.6 1.21.5 1.21.4 1.21.3 1.21.2 1.21.1 1.21
@@ -59,26 +62,28 @@ LOCAL_JAVA_HOME=""
 AC_CANDIDATES=()
 
 log()  { printf '%s\n' "$*"; }
-warn() { printf '%sAttention :%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
-die()  { printf '%sErreur :%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
+warn() { printf '%sWarning:%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
+die()  { printf '%sError:%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
 ok()   { printf '%s%s%s\n' "$C_GREEN" "$*" "$C_RESET"; }
+cancel() { printf '%sCancelled.%s\n' "$C_YELLOW" "$C_RESET"; exit 0; }
 
 section() {
   printf '\n%s▸ %s%s\n' "$C_BOLD$C_BLUE" "$*" "$C_RESET"
 }
 
 print_banner() {
-  printf '\n%s%s  ━━━  Création d'\''un serveur Minecraft  ━━━  %s\n' "$C_BOLD" "$C_CYAN" "$C_RESET"
+  printf '\n%s%s%s%s v%s%s\n' "$C_BOLD" "$C_CYAN" "$APP_NAME" "$C_RESET$C_DIM" "$APP_VERSION" "$C_RESET"
+  printf '%sCreate a Minecraft server in a few steps.%s\n' "$C_DIM" "$C_RESET"
 }
 
 need_cmd() {
-  command -v "$1" >/dev/null 2>&1 || die "'$1' est requis mais introuvable."
+  command -v "$1" >/dev/null 2>&1 || die "'$1' is required but was not found."
 }
 
 need_cmd curl
 need_cmd python3
 
-TMP_DIR=$(mktemp -d) || die "Impossible de créer un dossier temporaire."
+TMP_DIR=$(mktemp -d) || die "Could not create a temporary directory."
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 _ac_complete() {
@@ -95,7 +100,7 @@ _ac_complete() {
   done
   ((${#matches[@]})) || return 0
   if [[ -z "$word" && ${#matches[@]} -gt 10 ]]; then
-    printf '\n  Tapez un préfixe puis Tab (ex: 1.21, 26)\n'
+    printf '\n  Type a prefix, then press Tab (e.g. 1.21, 26)\n'
     return 0
   fi
   if ((${#matches[@]} == 1)); then
@@ -124,7 +129,7 @@ read_complete() {
   if ! IFS= read -r -e -p "$prompt" answer; then
     bind '"\t": complete' 2>/dev/null || true
     AC_CANDIDATES=()
-    die "Entrée interrompue."
+    die "Input interrupted."
   fi
   bind '"\t": complete' 2>/dev/null || true
   AC_CANDIDATES=()
@@ -139,8 +144,17 @@ contains_version() {
   return 1
 }
 
+print_version_range() {
+  local label=$1 lowest=$2 highest=$3
+  if [[ "$lowest" == "$highest" ]]; then
+    printf '  %s%-8s%s %s\n' "$C_DIM" "$label" "$C_RESET" "$lowest"
+  else
+    printf '  %s%-8s%s %s - %s\n' "$C_DIM" "$label" "$C_RESET" "$lowest" "$highest"
+  fi
+}
+
 show_versions() {
-  local v key rest last="" line=""
+  local v key rest last_key="" lowest="" highest=""
   for v in "${VERSIONS[@]}"; do
     if [[ "$v" == 1.* ]]; then
       rest=${v#1.}
@@ -148,35 +162,36 @@ show_versions() {
     else
       key="${v%%.*}.x"
     fi
-    if [[ "$key" != "$last" ]]; then
-      if [[ -n "$last" ]]; then
-        printf '  %s%-8s%s %s\n' "$C_DIM" "$last" "$C_RESET" "$line"
+    if [[ "$key" != "$last_key" ]]; then
+      if [[ -n "$last_key" ]]; then
+        print_version_range "$last_key" "$lowest" "$highest"
       fi
-      last="$key"
-      line="$v"
+      last_key=$key
+      highest=$v
+      lowest=$v
     else
-      line+="  $v"
+      lowest=$v
     fi
   done
-  if [[ -n "$last" ]]; then
-    printf '  %s%-8s%s %s\n' "$C_DIM" "$last" "$C_RESET" "$line"
+  if [[ -n "$last_key" ]]; then
+    print_version_range "$last_key" "$lowest" "$highest"
   fi
 }
 
 ask_name() {
   local name
   while :; do
-    printf 'Nom du serveur %s(nom du dossier)%s : ' "$C_DIM" "$C_RESET"
-    IFS= read -r name || die "Entrée interrompue."
+    printf 'Server name %s(folder name)%s: ' "$C_DIM" "$C_RESET"
+    IFS= read -r name || die "Input interrupted."
     case "$name" in
-      ''|.|..) warn "Nom invalide."; continue ;;
+      ''|.|..) warn "Invalid name."; continue ;;
     esac
     if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
-      warn "Utilisez uniquement lettres, chiffres, '.', '_' et '-'."
+      warn "Use only letters, digits, '.', '_' and '-'."
       continue
     fi
     if [[ -e "./$name" ]]; then
-      warn "Le dossier './$name' existe déjà."
+      warn "Folder './$name' already exists."
       continue
     fi
     NAME="$name"
@@ -186,31 +201,32 @@ ask_name() {
 }
 
 ask_version() {
-  section "Version du jeu"
+  section "Game version"
+  log "Available versions (snapshots excluded):"
   show_versions
   local v
   while :; do
-    read_complete "Version ${C_DIM}[${VERSIONS[0]}]${C_RESET} : " "${VERSIONS[@]}"
+    read_complete "Version ${C_DIM}[${VERSIONS[0]}]${C_RESET}: " "${VERSIONS[@]}"
     v=$REPLY
     [[ -z "$v" ]] && v=${VERSIONS[0]}
     if contains_version "$v"; then
       VERSION="$v"
       break
     fi
-    warn "'$v' n'est pas une release valide de la liste."
+    warn "'$v' is not a valid release from the list."
   done
-  ok "Version sélectionnée : $VERSION"
+  ok "Selected version: $VERSION"
 }
 
 ask_loader() {
   section "Mod loader"
-  printf '  %s1%s vanilla   %sserveur officiel%s\n' "$C_BOLD" "$C_RESET" "$C_DIM" "$C_RESET"
-  printf '  %s2%s fabric    %smods légers%s\n' "$C_BOLD" "$C_RESET" "$C_DIM" "$C_RESET"
-  printf '  %s3%s forge     %smods classiques%s\n' "$C_BOLD" "$C_RESET" "$C_DIM" "$C_RESET"
-  printf '  %s4%s neoforge  %sfork moderne de Forge%s\n' "$C_BOLD" "$C_RESET" "$C_DIM" "$C_RESET"
+  printf '  %s1%s vanilla   %sofficial server%s\n' "$C_BOLD" "$C_RESET" "$C_DIM" "$C_RESET"
+  printf '  %s2%s fabric    %slightweight mods%s\n' "$C_BOLD" "$C_RESET" "$C_DIM" "$C_RESET"
+  printf '  %s3%s forge     %sclassic mods%s\n' "$C_BOLD" "$C_RESET" "$C_DIM" "$C_RESET"
+  printf '  %s4%s neoforge  %smodern Forge fork%s\n' "$C_BOLD" "$C_RESET" "$C_DIM" "$C_RESET"
   local v
   while :; do
-    read_complete "Mod loader ${C_DIM}[vanilla]${C_RESET} : " vanilla fabric forge neoforge
+    read_complete "Mod loader ${C_DIM}[vanilla]${C_RESET}: " vanilla fabric forge neoforge
     v=$REPLY
     [[ -z "$v" ]] && v="vanilla"
     case "$v" in
@@ -218,16 +234,16 @@ ask_loader() {
       2|fabric) LOADER="fabric"; break ;;
       3|forge) LOADER="forge"; break ;;
       4|neoforge) LOADER="neoforge"; break ;;
-      *) warn "Choix invalide (1-4 ou vanilla/fabric/forge/neoforge)." ;;
+      *) warn "Invalid choice (1-4 or vanilla/fabric/forge/neoforge)." ;;
     esac
   done
-  ok "Mod loader sélectionné : $LOADER"
+  ok "Selected mod loader: $LOADER"
 }
 
 fetch_mc_meta() {
   local manifest="$TMP_DIR/manifest.json"
   local meta_url
-  curl -fsSL --retry 3 "$MANIFEST_URL" -o "$manifest" || die "Téléchargement du manifest Mojang impossible."
+  curl -fsSL --retry 3 "$MANIFEST_URL" -o "$manifest" || die "Could not download the Mojang manifest."
   meta_url=$(python3 - "$manifest" "$VERSION" <<'PY'
 import json
 import sys
@@ -240,9 +256,9 @@ for entry in data.get("versions", []):
         break
 PY
 ) || meta_url=""
-  [[ -n "$meta_url" ]] || die "Version $VERSION introuvable dans le manifest Mojang."
+  [[ -n "$meta_url" ]] || die "Version $VERSION was not found in the Mojang manifest."
   MC_META="$TMP_DIR/mc-$VERSION.json"
-  curl -fsSL --retry 3 "$meta_url" -o "$MC_META" || die "Téléchargement des métadonnées de $VERSION impossible."
+  curl -fsSL --retry 3 "$meta_url" -o "$MC_META" || die "Could not download metadata for $VERSION."
   JAVA_REQUIRED=$(python3 - "$MC_META" <<'PY'
 import json
 import sys
@@ -263,7 +279,7 @@ with open(sys.argv[1], encoding="utf-8") as handle:
     data = json.load(handle)
 print(data["downloads"]["server"]["url"])
 PY
-) || die "URL du serveur vanilla introuvable pour $VERSION."
+) || die "Vanilla server URL not found for $VERSION."
   JAR_NAME="server.jar"
   LOADER_DETAIL="Vanilla"
 }
@@ -273,7 +289,7 @@ resolve_fabric() {
   local installer_json="$TMP_DIR/fabric-installer.json"
   local loader installer
   curl -fsSL --retry 3 "${FABRIC_LOADER_URL}/${VERSION}" -o "$loader_json" 2>/dev/null \
-    || die "Fabric ne supporte pas Minecraft $VERSION."
+    || die "Fabric does not support Minecraft $VERSION."
   loader=$(python3 - "$loader_json" <<'PY'
 import json
 import sys
@@ -285,8 +301,8 @@ if not data:
 stable = [entry["loader"] for entry in data if entry.get("loader", {}).get("stable")]
 print((stable or [data[0]["loader"]])[0]["version"])
 PY
-) || die "Aucun loader Fabric disponible pour Minecraft $VERSION."
-  curl -fsSL --retry 3 "$FABRIC_INSTALLER_URL" -o "$installer_json" || die "Récupération de l'installateur Fabric impossible."
+) || die "No Fabric loader is available for Minecraft $VERSION."
+  curl -fsSL --retry 3 "$FABRIC_INSTALLER_URL" -o "$installer_json" || die "Could not fetch the Fabric installer."
   installer=$(python3 - "$installer_json" <<'PY'
 import json
 import sys
@@ -296,7 +312,7 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 stable = [entry for entry in data if entry.get("stable")]
 print((stable or data)[0]["version"])
 PY
-) || die "Version de l'installateur Fabric introuvable."
+) || die "Fabric installer version not found."
   JAR_URL="${FABRIC_LOADER_URL}/${VERSION}/${loader}/${installer}/server/jar"
   JAR_NAME="fabric-server-mc.${VERSION}-loader.${loader}-launcher.${installer}.jar"
   LOADER_DETAIL="Fabric loader ${loader} (installer ${installer})"
@@ -305,7 +321,7 @@ PY
 resolve_forge() {
   local promos="$TMP_DIR/forge-promos.json"
   local fv
-  curl -fsSL --retry 3 "$FORGE_PROMOS_URL" -o "$promos" || die "Récupération des versions Forge impossible."
+  curl -fsSL --retry 3 "$FORGE_PROMOS_URL" -o "$promos" || die "Could not fetch Forge versions."
   fv=$(python3 - "$promos" "$VERSION" <<'PY'
 import json
 import sys
@@ -316,7 +332,7 @@ mc = sys.argv[2]
 print(promos.get(mc + "-recommended") or promos.get(mc + "-latest") or "")
 PY
 ) || fv=""
-  [[ -n "$fv" ]] || die "Forge n'a pas de build pour Minecraft $VERSION."
+  [[ -n "$fv" ]] || die "Forge has no build for Minecraft $VERSION."
   JAR_URL="https://maven.minecraftforge.net/net/minecraftforge/forge/${VERSION}-${fv}/forge-${VERSION}-${fv}-installer.jar"
   JAR_NAME="forge-${VERSION}-${fv}-installer.jar"
   LOADER_DETAIL="Forge ${fv}"
@@ -327,11 +343,11 @@ resolve_neoforge() {
   if [[ "$VERSION" == "1.20.1" ]]; then
     artifact="forge"
     xml="$TMP_DIR/neoforge-forge.xml"
-    curl -fsSL --retry 3 "${NEOFORGE_MAVEN}/forge/maven-metadata.xml" -o "$xml" || die "Récupération des versions NeoForge impossible."
+    curl -fsSL --retry 3 "${NEOFORGE_MAVEN}/forge/maven-metadata.xml" -o "$xml" || die "Could not fetch NeoForge versions."
   else
     artifact="neoforge"
     xml="$TMP_DIR/neoforge.xml"
-    curl -fsSL --retry 3 "${NEOFORGE_MAVEN}/neoforge/maven-metadata.xml" -o "$xml" || die "Récupération des versions NeoForge impossible."
+    curl -fsSL --retry 3 "${NEOFORGE_MAVEN}/neoforge/maven-metadata.xml" -o "$xml" || die "Could not fetch NeoForge versions."
   fi
   fv=$(python3 - "$xml" "$VERSION" <<'PY'
 import re
@@ -363,7 +379,7 @@ eligible.sort(key=lambda value: tuple(int(x) for x in re.findall(r"\d+", value))
 print(eligible[-1] if eligible else "")
 PY
 ) || fv=""
-  [[ -n "$fv" ]] || die "NeoForge n'a pas de build stable pour Minecraft $VERSION (minimum 1.20.1, certaines versions ne sont pas supportées)."
+  [[ -n "$fv" ]] || die "NeoForge has no stable build for Minecraft $VERSION (1.20.1 minimum; some versions are not supported)."
   if [[ "$artifact" == "forge" ]]; then
     JAR_URL="${NEOFORGE_MAVEN}/forge/${fv}/forge-${fv}-installer.jar"
   else
@@ -423,51 +439,35 @@ assess_java() {
   fi
 
   if (( have == 1 && SYS_JAVA_MAJOR >= JAVA_REQUIRED )); then
-    JAVA_DETAIL="Java ${SYS_JAVA_MAJOR} (système)"
-    ok "Java ${SYS_JAVA_MAJOR} détecté (requis : ${JAVA_REQUIRED}+)."
+    JAVA_DETAIL="Java ${SYS_JAVA_MAJOR} (system)"
+    ok "Java ${SYS_JAVA_MAJOR} detected (required: ${JAVA_REQUIRED}+)."
     if (( JAVA_REQUIRED <= 8 && SYS_JAVA_MAJOR > 8 )); then
-      warn "Cette ancienne version peut malgré tout nécessiter Java ${JAVA_REQUIRED} ; Java ${SYS_JAVA_MAJOR} peut poser problème."
+      warn "Minecraft ${VERSION} may require Java ${JAVA_REQUIRED}; Java ${SYS_JAVA_MAJOR} might not work."
     fi
     return
   fi
 
   if (( have == 1 )); then
-    warn "Java ${SYS_JAVA_MAJOR} détecté, mais Minecraft ${VERSION} demande Java ${JAVA_REQUIRED}+."
+    warn "Java ${SYS_JAVA_MAJOR} detected, but Minecraft ${VERSION} requires Java ${JAVA_REQUIRED}+."
   else
-    warn "Java est introuvable sur ce système."
+    warn "Java was not found on this system."
   fi
 
   if ! JDK_FEATURE=$(next_jdk_feature "$JAVA_REQUIRED"); then
-    if [[ "$LOADER" == "forge" || "$LOADER" == "neoforge" ]]; then
-      die "Aucun JDK local connu pour Java ${JAVA_REQUIRED}+. Installe-le manuellement."
-    fi
-    JAVA_MODE="none"
-    JAVA_DETAIL="absent (serveur non lançable sans Java)"
-    warn "Aucun JDK local connu pour Java ${JAVA_REQUIRED}+."
-    return
+    die "No local JDK is available for Java ${JAVA_REQUIRED}+. Install it manually."
   fi
 
   local answer
-  printf 'Télécharger un JDK Temurin %s local dans le dossier du serveur ? %s[o/N]%s ' \
+  printf 'Download a local Temurin %s JDK into the server folder? %s[y/N]%s ' \
     "$JDK_FEATURE" "$C_DIM" "$C_RESET"
-  IFS= read -r answer || die "Entrée interrompue."
+  IFS= read -r answer || die "Input interrupted."
   case "$answer" in
-    o|O|oui|Oui|y|Y|yes|Yes)
+    y|Y|yes|Yes)
       JAVA_MODE="local"
-      JAVA_DETAIL="Temurin ${JDK_FEATURE} (local, à télécharger)"
+      JAVA_DETAIL="Temurin ${JDK_FEATURE} (local, to download)"
       ;;
     *)
-      if (( have == 1 )); then
-        JAVA_DETAIL="Java ${SYS_JAVA_MAJOR} (système, trop ancien)"
-        warn "On continue avec Java ${SYS_JAVA_MAJOR} ; l'installation ou le démarrage peut échouer."
-      else
-        if [[ "$LOADER" == "forge" || "$LOADER" == "neoforge" ]]; then
-          die "Java est requis pour installer Forge/NeoForge."
-        fi
-        JAVA_MODE="none"
-        JAVA_DETAIL="absent (serveur non lançable sans Java)"
-        warn "Le serveur sera créé, mais il ne pourra pas démarrer sans Java."
-      fi
+      cancel
       ;;
   esac
 }
@@ -477,17 +477,17 @@ download_local_jdk() {
   need_cmd tar
   local system arch api_url json meta link checksum filename size archive actual
   system=$(uname -s)
-  [[ "$system" == "Linux" ]] || die "Le téléchargement automatique du JDK n'est supporté que sous Linux."
+  [[ "$system" == "Linux" ]] || die "Automatic JDK download is only supported on Linux."
   case "$(uname -m)" in
     x86_64|amd64) arch="x64" ;;
     aarch64|arm64) arch="aarch64" ;;
-    *) die "Architecture non supportée pour le téléchargement du JDK : $(uname -m)." ;;
+    *) die "Unsupported architecture for JDK download: $(uname -m)." ;;
   esac
 
-  section "Téléchargement de Java ${feature}"
+  section "Downloading Java ${feature}"
   api_url="${ADOPTIUM_ASSETS_URL}/${feature}/hotspot?architecture=${arch}&image_type=jdk&os=linux&vendor=eclipse"
   json="$TMP_DIR/adoptium-${feature}.json"
-  curl -fsSL --retry 3 "$api_url" -o "$json" || die "API Adoptium inaccessible."
+  curl -fsSL --retry 3 "$api_url" -o "$json" || die "The Adoptium API is unreachable."
   meta=$(python3 - "$json" <<'PY'
 import json
 import sys
@@ -507,13 +507,13 @@ for entry in data:
         break
 PY
 ) || meta=""
-  [[ -n "$meta" ]] || die "Aucun JDK Temurin ${feature} disponible pour cette plateforme."
+  [[ -n "$meta" ]] || die "No Temurin ${feature} JDK is available for this platform."
   IFS=$'\t' read -r link checksum filename size <<<"$meta"
-  [[ -n "$link" && -n "$checksum" ]] || die "Métadonnées JDK incomplètes."
+  [[ -n "$link" && -n "$checksum" ]] || die "Incomplete JDK metadata."
 
   archive="$SERVER_DIR/.jdk.tar.gz"
-  log "Téléchargement de ${filename} ($(( size / 1048576 )) Mo)..."
-  curl -fL --retry 3 --progress-bar -o "$archive" "$link" || die "Téléchargement du JDK échoué."
+  log "Downloading ${filename} ($(( size / 1048576 )) MB)..."
+  curl -fL --retry 3 --progress-bar -o "$archive" "$link" || die "JDK download failed."
 
   actual=$(python3 - "$archive" <<'PY'
 import hashlib
@@ -528,41 +528,41 @@ PY
 ) || actual=""
   if [[ "$actual" != "$checksum" ]]; then
     rm -f "$archive"
-    die "Checksum SHA-256 invalide pour le JDK téléchargé."
+    die "Invalid SHA-256 checksum for the downloaded JDK."
   fi
-  ok "Checksum SHA-256 vérifié."
+  ok "SHA-256 checksum verified."
 
   LOCAL_JAVA_HOME="$SERVER_DIR/.jdk"
   rm -rf "$LOCAL_JAVA_HOME"
   mkdir -p "$LOCAL_JAVA_HOME"
-  tar -xzf "$archive" -C "$LOCAL_JAVA_HOME" --strip-components=1 || die "Extraction du JDK impossible."
+  tar -xzf "$archive" -C "$LOCAL_JAVA_HOME" --strip-components=1 || die "JDK extraction failed."
   rm -f "$archive"
-  [[ -x "$LOCAL_JAVA_HOME/bin/java" ]] || die "JDK extrait invalide."
+  [[ -x "$LOCAL_JAVA_HOME/bin/java" ]] || die "The extracted JDK is invalid."
   JAVA_BIN="$LOCAL_JAVA_HOME/bin/java"
   export JAVA_HOME="$LOCAL_JAVA_HOME"
   export PATH="$LOCAL_JAVA_HOME/bin:$PATH"
-  ok "JDK ${feature} installé dans ${C_DIM}.jdk${C_RESET}"
+  ok "JDK ${feature} installed in .jdk"
 }
 
 print_summary() {
-  printf '\n%s┌─ Résumé ─────────────────────────────────┐%s\n' "$C_CYAN" "$C_RESET"
-  printf '  %s%-12s%s : %s%s%s\n' "$C_DIM" "Nom" "$C_RESET" "$C_BOLD" "$NAME" "$C_RESET"
-  printf '  %s%-12s%s : %s\n' "$C_DIM" "Dossier" "$C_RESET" "$SERVER_DIR"
-  printf '  %s%-12s%s : %s\n' "$C_DIM" "Version" "$C_RESET" "$VERSION"
-  printf '  %s%-12s%s : %s\n' "$C_DIM" "Mod loader" "$C_RESET" "$LOADER"
-  printf '  %s%-12s%s : %s\n' "$C_DIM" "Détail" "$C_RESET" "$LOADER_DETAIL"
-  printf '  %s%-12s%s : %s\n' "$C_DIM" "Fichier jar" "$C_RESET" "$JAR_NAME"
-  printf '  %s%-12s%s : %s\n' "$C_DIM" "Source" "$C_RESET" "$JAR_URL"
-  printf '  %s%-12s%s : %s\n' "$C_DIM" "Java" "$C_RESET" "$JAVA_DETAIL"
-  printf '%s└──────────────────────────────────────────┘%s\n' "$C_CYAN" "$C_RESET"
+  section "Summary"
+  printf '  %s%-11s%s %s\n' "$C_DIM" "Name" "$C_RESET" "$NAME"
+  printf '  %s%-11s%s %s\n' "$C_DIM" "Folder" "$C_RESET" "$SERVER_DIR"
+  printf '  %s%-11s%s %s\n' "$C_DIM" "Version" "$C_RESET" "$VERSION"
+  printf '  %s%-11s%s %s\n' "$C_DIM" "Mod loader" "$C_RESET" "$LOADER"
+  printf '  %s%-11s%s %s\n' "$C_DIM" "Detail" "$C_RESET" "$LOADER_DETAIL"
+  printf '  %s%-11s%s %s\n' "$C_DIM" "Jar file" "$C_RESET" "$JAR_NAME"
+  printf '  %s%-11s%s %s\n' "$C_DIM" "Java" "$C_RESET" "$JAVA_DETAIL"
+  printf '  %s%-11s%s\n' "$C_DIM" "Source" "$C_RESET"
+  printf '    %s%s%s\n' "$C_DIM" "$JAR_URL" "$C_RESET"
 }
 
 confirm() {
   local answer
-  printf 'Créer ce serveur ? %s[o/N]%s ' "$C_DIM" "$C_RESET"
-  IFS= read -r answer || die "Entrée interrompue."
+  printf 'Create this server? %s[y/N]%s ' "$C_DIM" "$C_RESET"
+  IFS= read -r answer || die "Input interrupted."
   case "$answer" in
-    o|O|oui|Oui|y|Y|yes|Yes) return 0 ;;
+    y|Y|yes|Yes) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -605,25 +605,24 @@ main() {
   assess_java
   print_summary
   if ! confirm; then
-    log "Annulé."
-    exit 0
+    cancel
   fi
 
-  mkdir -p "$SERVER_DIR" || die "Impossible de créer le dossier '$SERVER_DIR'."
-  cd "$SERVER_DIR" || die "Impossible d'entrer dans '$SERVER_DIR'."
+  mkdir -p "$SERVER_DIR" || die "Could not create folder '$SERVER_DIR'."
+  cd "$SERVER_DIR" || die "Could not enter '$SERVER_DIR'."
 
   if [[ "$JAVA_MODE" == "local" ]]; then
     download_local_jdk "$JDK_FEATURE"
   fi
 
-  section "Téléchargement du serveur"
-  log "Fichier : $JAR_NAME"
-  curl -fL --retry 3 --progress-bar -o "$JAR_NAME" "$JAR_URL" || die "Téléchargement échoué."
-  [[ -s "$JAR_NAME" ]] || die "Le fichier téléchargé est vide."
+  section "Downloading server"
+  log "File: $JAR_NAME"
+  curl -fL --retry 3 --progress-bar -o "$JAR_NAME" "$JAR_URL" || die "Download failed."
+  [[ -s "$JAR_NAME" ]] || die "The downloaded file is empty."
 
   if [[ "$LOADER" == "forge" || "$LOADER" == "neoforge" ]]; then
-    section "Installation du serveur ($LOADER)"
-    "$JAVA_BIN" -jar "$JAR_NAME" --installServer || die "L'installation du serveur a échoué."
+    section "Installing server ($LOADER)"
+    "$JAVA_BIN" -jar "$JAR_NAME" --installServer || die "Server installation failed."
     printf 'eula=true\n' > eula.txt
     wrap_forge_run_script
     [[ -f run.sh ]] && chmod +x run.sh
@@ -632,8 +631,8 @@ main() {
     printf 'eula=true\n' > eula.txt
   fi
 
-  printf '\n%s✔ Serveur prêt%s dans %s%s%s\n' "$C_BOLD$C_GREEN" "$C_RESET" "$C_BOLD" "$SERVER_DIR" "$C_RESET"
-  printf '  Lancement : %scd "%s" && ./run.sh%s\n' "$C_DIM" "$SERVER_DIR" "$C_RESET"
+  printf '\n%s✔ Server ready%s in %s%s%s\n' "$C_BOLD$C_GREEN" "$C_RESET" "$C_BOLD" "$SERVER_DIR" "$C_RESET"
+  printf '  Start: %scd "%s" && ./run.sh%s\n' "$C_DIM" "$SERVER_DIR" "$C_RESET"
 }
 
 main "$@"
