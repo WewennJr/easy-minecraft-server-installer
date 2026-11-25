@@ -2,7 +2,7 @@
 
 A small, dependency-light Bash script that creates a ready-to-run Minecraft server in a new folder.
 
-It asks for a server name, a Minecraft release, and a mod loader, then downloads the correct files from official sources and prepares the server directory.
+It asks for a server name, a Minecraft release, a mod loader, and the maximum memory to allocate, then downloads the correct files from official sources and prepares the server directory.
 
 ## Features
 
@@ -12,6 +12,8 @@ It asks for a server name, a Minecraft release, and a mod loader, then downloads
 - Tab completion for versions and mod loaders
 - Java detection, with an optional local Temurin JDK download
 - SHA-256 verification for downloaded JDKs
+- Configurable maximum server memory, written to `run.sh` or `user_jvm_args.txt`
+- SHA-1 verification for server files when the source provides one
 - Creates `eula.txt` and a `run.sh` launcher
 - Clear errors for unsupported version/loader combinations
 - Nothing is bundled: everything is fetched on demand
@@ -36,6 +38,7 @@ You will be prompted for:
 1. Server name (used as the folder name)
 2. Minecraft version
 3. Mod loader
+4. Maximum server memory in GB (default: 2)
 
 Review the summary, confirm, and the server is created in the current directory.
 

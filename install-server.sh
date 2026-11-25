@@ -7,7 +7,7 @@
 set -euo pipefail
 
 APP_NAME="Easy Minecraft Server Installer"
-APP_VERSION="1.1"
+APP_VERSION="1.3"
 
 VERSIONS=(
   26.3 26.2 26.1.2 26.1.1 26.1
@@ -50,8 +50,10 @@ fi
 NAME=""
 VERSION=""
 LOADER=""
+RAM_GB=""
 JAR_NAME=""
 JAR_URL=""
+JAR_SHA1=""
 LOADER_DETAIL=""
 JAVA_REQUIRED=""
 MC_META=""
@@ -107,6 +109,13 @@ mc_server_url() {
     | grep -o '"server":{[^}]*}' \
     | head -n1 \
     | sed -n 's/.*"url":"\([^"]*\)".*/\1/p' || true
+}
+
+mc_server_sha1() {
+  compact_json "$1" \
+    | grep -o '"server":{[^}]*}' \
+    | head -n1 \
+    | sed -n 's/.*"sha1":"\([^"]*\)".*/\1/p' || true
 }
 
 mc_java_major() {
@@ -206,6 +215,22 @@ sha256_of() {
     printf '%s\n' "${out%% *}"
   elif command -v openssl >/dev/null 2>&1; then
     out=$(openssl dgst -sha256 "$file") || return 1
+    printf '%s\n' "${out##* }"
+  else
+    return 1
+  fi
+}
+
+sha1_of() {
+  local file=$1 out
+  if command -v sha1sum >/dev/null 2>&1; then
+    out=$(sha1sum "$file") || return 1
+    printf '%s\n' "${out%% *}"
+  elif command -v shasum >/dev/null 2>&1; then
+    out=$(shasum -a 1 "$file") || return 1
+    printf '%s\n' "${out%% *}"
+  elif command -v openssl >/dev/null 2>&1; then
+    out=$(openssl dgst -sha1 "$file") || return 1
     printf '%s\n' "${out##* }"
   else
     return 1
@@ -366,6 +391,24 @@ ask_loader() {
   ok "Selected mod loader: $LOADER"
 }
 
+ask_memory() {
+  section "Memory"
+  local value
+  while :; do
+    printf 'Maximum memory in GB %s[2]%s: ' "$C_DIM" "$C_RESET"
+    IFS= read -r value || die "Input interrupted."
+    if [[ -z "$value" ]]; then
+      value=2
+    fi
+    if [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
+      RAM_GB=$value
+      break
+    fi
+    warn "Enter a whole number of gigabytes (1 or more)."
+  done
+  ok "Maximum memory: ${RAM_GB} GB"
+}
+
 fetch_mc_meta() {
   local manifest="$TMP_DIR/manifest.json"
   local meta_url
@@ -380,6 +423,7 @@ fetch_mc_meta() {
 resolve_vanilla() {
   JAR_URL=$(mc_server_url "$MC_META")
   [[ -n "$JAR_URL" ]] || die "Vanilla server URL not found for $VERSION."
+  JAR_SHA1=$(mc_server_sha1 "$MC_META")
   JAR_NAME="server.jar"
   LOADER_DETAIL="Vanilla"
 }
@@ -396,6 +440,7 @@ resolve_fabric() {
   installer=$(fabric_installer_version "$installer_json")
   [[ -n "$installer" ]] || die "Fabric installer version not found."
   JAR_URL="${FABRIC_LOADER_URL}/${VERSION}/${loader}/${installer}/server/jar"
+  JAR_SHA1=""
   JAR_NAME="fabric-server-mc.${VERSION}-loader.${loader}-launcher.${installer}.jar"
   LOADER_DETAIL="Fabric loader ${loader} (installer ${installer})"
 }
@@ -408,6 +453,7 @@ resolve_forge() {
   [[ -n "$fv" ]] || die "Forge has no build for Minecraft $VERSION."
   JAR_URL="https://maven.minecraftforge.net/net/minecraftforge/forge/${VERSION}-${fv}/forge-${VERSION}-${fv}-installer.jar"
   JAR_NAME="forge-${VERSION}-${fv}-installer.jar"
+  JAR_SHA1=$(curl -fsSL --retry 3 "${JAR_URL}.sha1" 2>/dev/null | tr -d '[:space:]' || true)
   LOADER_DETAIL="Forge ${fv}"
 }
 
@@ -430,6 +476,7 @@ resolve_neoforge() {
     JAR_URL="${NEOFORGE_MAVEN}/neoforge/${fv}/neoforge-${fv}-installer.jar"
   fi
   JAR_NAME="${artifact}-${fv}-installer.jar"
+  JAR_SHA1=$(curl -fsSL --retry 3 "${JAR_URL}.sha1" 2>/dev/null | tr -d '[:space:]' || true)
   LOADER_DETAIL="NeoForge ${fv}"
 }
 
@@ -569,6 +616,7 @@ print_summary() {
   printf '  %s%-11s%s %s\n' "$C_DIM" "Mod loader" "$C_RESET" "$LOADER"
   printf '  %s%-11s%s %s\n' "$C_DIM" "Detail" "$C_RESET" "$LOADER_DETAIL"
   printf '  %s%-11s%s %s\n' "$C_DIM" "Jar file" "$C_RESET" "$JAR_NAME"
+  printf '  %s%-11s%s %s\n' "$C_DIM" "Max memory" "$C_RESET" "${RAM_GB} GB"
   printf '  %s%-11s%s %s\n' "$C_DIM" "Java" "$C_RESET" "$JAVA_DETAIL"
   printf '  %s%-11s%s\n' "$C_DIM" "Source" "$C_RESET"
   printf '    %s%s%s\n' "$C_DIM" "$JAR_URL" "$C_RESET"
@@ -591,12 +639,28 @@ write_run_script() {
     if [[ "$JAVA_MODE" == "local" ]]; then
       printf 'export JAVA_HOME="$PWD/.jdk"\n'
       printf 'export PATH="$JAVA_HOME/bin:$PATH"\n'
-      printf 'exec "$JAVA_HOME/bin/java" -jar "%s" nogui\n' "$JAR_NAME"
+      printf 'exec "$JAVA_HOME/bin/java" -Xmx%sG -jar "%s" nogui\n' "$RAM_GB" "$JAR_NAME"
     else
-      printf 'exec java -jar "%s" nogui\n' "$JAR_NAME"
+      printf 'exec java -Xmx%sG -jar "%s" nogui\n' "$RAM_GB" "$JAR_NAME"
     fi
   } > run.sh
   chmod +x run.sh
+}
+
+apply_forge_memory() {
+  local args_file="user_jvm_args.txt"
+  if [[ ! -f "$args_file" ]]; then
+    warn "user_jvm_args.txt not found; memory settings were not applied."
+    return 0
+  fi
+  local tmp
+  tmp=$(mktemp "$TMP_DIR/jvm.XXXXXX") || die "Could not create a temporary file."
+  awk -v ram="$RAM_GB" '
+    /^[[:space:]]*-Xm[sx]/ { next }
+    { print }
+    END { printf "-Xmx%sG\n", ram }
+  ' "$args_file" > "$tmp"
+  mv "$tmp" "$args_file"
 }
 
 wrap_forge_run_script() {
@@ -618,6 +682,7 @@ main() {
   ask_name
   ask_version
   ask_loader
+  ask_memory
   resolve_jar
   assess_java
   print_summary
@@ -637,9 +702,25 @@ main() {
   curl -fL --retry 3 --progress-bar -o "$JAR_NAME" "$JAR_URL" || die "Download failed."
   [[ -s "$JAR_NAME" ]] || die "The downloaded file is empty."
 
+  if [[ -n "$JAR_SHA1" ]]; then
+    local actual want
+    if actual=$(sha1_of "$JAR_NAME"); then
+      actual=$(printf '%s' "$actual" | tr '[:upper:]' '[:lower:]')
+      want=$(printf '%s' "$JAR_SHA1" | tr '[:upper:]' '[:lower:]')
+      if [[ "$actual" != "$want" ]]; then
+        rm -f "$JAR_NAME"
+        die "Invalid SHA-1 checksum for the downloaded file."
+      fi
+      ok "SHA-1 checksum verified."
+    else
+      warn "No SHA-1 tool found (sha1sum, shasum, or openssl); skipping verification."
+    fi
+  fi
+
   if [[ "$LOADER" == "forge" || "$LOADER" == "neoforge" ]]; then
     section "Installing server ($LOADER)"
     "$JAVA_BIN" -jar "$JAR_NAME" --installServer || die "Server installation failed."
+    apply_forge_memory
     printf 'eula=true\n' > eula.txt
     wrap_forge_run_script
     [[ -f run.sh ]] && chmod +x run.sh
