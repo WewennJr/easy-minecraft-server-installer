@@ -7,7 +7,7 @@
 set -euo pipefail
 
 APP_NAME="Easy Minecraft Server Installer"
-APP_VERSION="1.4"
+APP_VERSION="1.5"
 
 VERSIONS=(
   26.3 26.2 26.1.2 26.1.1 26.1
@@ -65,18 +65,55 @@ JAVA_DETAIL=""
 SYS_JAVA_MAJOR=""
 JDK_FEATURE=""
 LOCAL_JAVA_HOME=""
+LOG_FILE=""
+LOG_BUFFER=()
 
 AC_CANDIDATES=()
 
-log()  { printf '%s\n' "$*"; }
-warn() { printf '%sWarning:%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
-die()  { printf '%sError:%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
-ok()   { printf '%s%s%s\n' "$C_GREEN" "$*" "$C_RESET"; }
+log_line() {
+  local line
+  printf -v line '[%(%Y-%m-%d %H:%M:%S)T] %s' -1 "$*"
+  if [[ -n "$LOG_FILE" ]]; then
+    printf '%s\n' "$line" >> "$LOG_FILE" 2>/dev/null || true
+  else
+    LOG_BUFFER+=("$line")
+  fi
+}
+
+start_logging() {
+  LOG_FILE="$SERVER_DIR/install-server-$NAME.log"
+  if ! : > "$LOG_FILE" 2>/dev/null; then
+    LOG_FILE=""
+    return 1
+  fi
+  local line
+  for line in "${LOG_BUFFER[@]}"; do
+    printf '%s\n' "$line" >> "$LOG_FILE" 2>/dev/null || true
+  done
+  LOG_BUFFER=()
+}
+
+log()  { printf '%s\n' "$*"; log_line "$*"; }
+warn() { printf '%sWarning:%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; log_line "Warning: $*"; }
+die()  {
+  printf '%sError:%s %s\n' "$C_RED" "$C_RESET" "$*" >&2
+  log_line "Error: $*"
+  if [[ -n "$LOG_FILE" ]]; then
+    printf 'Log: %s\n' "$LOG_FILE" >&2
+  fi
+  exit 1
+}
+ok()   { printf '%s%s%s\n' "$C_GREEN" "$*" "$C_RESET"; log_line "$*"; }
 cancel() {
   if (($#)); then
     printf '%sCancelled:%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2
+    log_line "Cancelled: $*"
   else
     printf '%sCancelled.%s\n' "$C_YELLOW" "$C_RESET"
+    log_line "Cancelled."
+  fi
+  if [[ -n "$LOG_FILE" ]]; then
+    printf 'Log: %s\n' "$LOG_FILE"
   fi
   exit 0
 }
@@ -88,6 +125,7 @@ require_https() {
 
 section() {
   printf '\n%s▸ %s%s\n' "$C_BOLD$C_BLUE" "$*" "$C_RESET"
+  log_line "== $* =="
 }
 
 print_banner() {
@@ -102,6 +140,10 @@ need_cmd() {
 if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
   die "Do not run this installer as root."
 fi
+
+log_line "Starting $APP_NAME v$APP_VERSION"
+log_line "Working directory: $PWD"
+log_line "Script: $0"
 
 require_https "$MANIFEST_URL"
 require_https "$FORGE_PROMOS_URL"
@@ -604,6 +646,7 @@ download_local_jdk() {
   esac
 
   section "Downloading Java ${feature}"
+  log_line "Downloading local Temurin $feature JDK"
   api_url="${ADOPTIUM_ASSETS_URL}/${feature}/hotspot?architecture=${arch}&image_type=jdk&os=linux&vendor=eclipse"
   require_https "$api_url"
   json="$TMP_DIR/adoptium-${feature}.json"
@@ -635,6 +678,7 @@ download_local_jdk() {
   JAVA_BIN="$LOCAL_JAVA_HOME/bin/java"
   export JAVA_HOME="$LOCAL_JAVA_HOME"
   export PATH="$LOCAL_JAVA_HOME/bin:$PATH"
+  log_line "Local JDK ready: $LOCAL_JAVA_HOME"
   ok "JDK ${feature} installed in .jdk"
 }
 
@@ -650,6 +694,7 @@ print_summary() {
   printf '  %s%-11s%s %s\n' "$C_DIM" "Java" "$C_RESET" "$JAVA_DETAIL"
   printf '  %s%-11s%s\n' "$C_DIM" "Source" "$C_RESET"
   printf '    %s%s%s\n' "$C_DIM" "$JAR_URL" "$C_RESET"
+  log_line "Summary: name=$NAME version=$VERSION loader=$LOADER detail=$LOADER_DETAIL jar=$JAR_NAME memory=${RAM_GB}GB java=$JAVA_DETAIL source=$JAR_URL"
 }
 
 confirm() {
@@ -690,6 +735,7 @@ write_run_script() {
 write_eula() {
   (( EULA_ACCEPTED == 1 )) || die "The Minecraft EULA must be accepted before creating eula.txt."
   printf 'eula=true\n' > eula.txt
+  log_line "Wrote eula.txt"
 }
 
 apply_forge_memory() {
@@ -732,15 +778,24 @@ main() {
   assess_java
   print_summary
   if ! confirm; then
+    log_line "Creation declined"
     cancel
   fi
+  log_line "Creation confirmed"
   if ! accept_eula; then
+    log_line "EULA declined"
     warn "You must accept the Minecraft EULA to continue."
     cancel
   fi
+  log_line "EULA accepted"
 
+  log_line "Creating server folder: $SERVER_DIR"
   mkdir -p "$SERVER_DIR" || die "Could not create folder '$SERVER_DIR'."
   cd "$SERVER_DIR" || die "Could not enter '$SERVER_DIR'."
+  if ! start_logging; then
+    warn "Could not create log file in $SERVER_DIR."
+  fi
+  log_line "Entered server folder: $SERVER_DIR"
 
   if [[ "$JAVA_MODE" == "local" ]]; then
     download_local_jdk "$JDK_FEATURE"
@@ -749,6 +804,7 @@ main() {
   section "Downloading server"
   log "File: $JAR_NAME"
   require_https "$JAR_URL"
+  log_line "Downloading server: $JAR_URL"
   curl "${CURL_HTTPS[@]}" -fL --retry 3 --progress-bar -o "$JAR_NAME" "$JAR_URL" || die "Download failed."
   [[ -s "$JAR_NAME" ]] || die "The downloaded file is empty."
 
@@ -769,18 +825,24 @@ main() {
 
   if [[ "$LOADER" == "forge" || "$LOADER" == "neoforge" ]]; then
     section "Installing server ($LOADER)"
+    log_line "Running $LOADER installer: $JAR_NAME"
     "$JAVA_BIN" -jar "$JAR_NAME" --installServer || die "Server installation failed."
     apply_forge_memory
     write_eula
     wrap_forge_run_script
     [[ -f run.sh ]] && chmod +x run.sh
+    log_line "$LOADER installation finished"
   else
     write_run_script
     write_eula
   fi
 
+  log_line "Server ready: $SERVER_DIR"
   printf '\n%s✔ Server ready%s in %s%s%s\n' "$C_BOLD$C_GREEN" "$C_RESET" "$C_BOLD" "$SERVER_DIR" "$C_RESET"
   printf '  Start: %scd "%s" && ./run.sh%s\n' "$C_DIM" "$SERVER_DIR" "$C_RESET"
+  if [[ -n "$LOG_FILE" ]]; then
+    printf '  Log: %s%s%s\n' "$C_DIM" "$LOG_FILE" "$C_RESET"
+  fi
 }
 
 main "$@"

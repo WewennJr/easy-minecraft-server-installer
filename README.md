@@ -28,6 +28,8 @@ cd <server-name>
 
 On Windows, use `run.bat` instead.
 
+On Linux, the installer writes `install-server-<server-name>.log` in the server folder. Forge/NeoForge also create their own installer logs.
+
 ## Requirements
 
 - **Linux:** `bash`, `curl`, `tar`, a non-root user, and HTTPS access.
