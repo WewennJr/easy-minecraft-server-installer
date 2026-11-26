@@ -1,156 +1,67 @@
 # Easy Minecraft Server Installer
 
-A small, dependency-light installer that creates a ready-to-run Minecraft server in a new folder. It is available as a Bash script for Linux and a batch script for Windows.
+A small Bash/batch installer that creates a ready-to-run Minecraft server in a new folder. It asks for a name, version, mod loader, and memory, then downloads the official files.
 
-It asks for a server name, a Minecraft release, a mod loader, and the maximum memory to allocate, then downloads the correct files from official sources and prepares the server directory.
+## Quick start
 
-## Features
-
-- Vanilla, Fabric, Forge, and NeoForge support
-- Release versions only (snapshots excluded)
-- Linux: Minecraft 1.18.2+ only, with older versions excluded for security
-- Linux: explicit Minecraft EULA acceptance before the server is created
-- Linux: refuses to run as root and enforces HTTPS downloads
-- Correct server or installer downloaded from official sources
-- Linux and Windows installers (`install-server.sh` and `install-server.bat`)
-- Tab completion for versions and mod loaders on Linux
-- Java detection, with an optional local Temurin JDK download
-- SHA-256 verification for downloaded JDKs
-- Configurable maximum server memory, written to `run.sh`/`run.bat` or `user_jvm_args.txt`
-- SHA-1 verification for server files when the source provides one
-- Creates `eula.txt` and a `run.sh` or `run.bat` launcher
-- Clear errors for unsupported version/loader combinations
-- Nothing is bundled: everything is fetched on demand
-
-## Requirements
-
-### Linux
-
-- `bash`
-- `curl`
-- `tar`
-- Java 17, 21, or 25 depending on the Minecraft version, or accept the local JDK download
-- A non-root user: the installer refuses to run as root
-- HTTPS access to the official sources: non-HTTPS URLs are rejected
-
-### Windows
-
-- Windows 10 or 11
-- `curl.exe` (included with Windows 10 1803 and later)
-- PowerShell 5.1 (included with Windows 10 and 11)
-- Java 8, 11, 17, 21, or 25 depending on the Minecraft version, or accept the local JDK download
-
-The automatic JDK download supports Linux and Windows on x64 and aarch64.
-
-## Usage
-
-### Linux
+Linux:
 
 ```bash
 chmod +x install-server.sh
 ./install-server.sh
 ```
 
-Do not run it with `sudo` or as root; the installer refuses to start as root.
+Do not run as root; the installer refuses it.
 
-### Windows
-
-Double-click `install-server.bat`, or run it from Command Prompt:
+Windows:
 
 ```bat
 install-server.bat
 ```
 
-You will be prompted for:
-
-1. Server name (used as the folder name)
-2. Minecraft version
-3. Mod loader
-4. Maximum server memory in GB (default: 2)
-
-On Linux, you must also accept the Minecraft EULA before the server folder is created. If you decline, the installer cancels.
-
-Review the summary, confirm, and the server is created in the current directory.
-
-Start it with:
+Start the server:
 
 ```bash
 cd <server-name>
 ./run.sh
 ```
 
-On Windows:
+On Windows, use `run.bat` instead.
 
-```bat
-cd <server-name>
-run.bat
-```
+## Requirements
 
-## Supported versions
+- **Linux:** `bash`, `curl`, `tar`, a non-root user, and HTTPS access.
+- **Windows:** Windows 10/11, `curl.exe`, and PowerShell 5.1.
+- **Java:** 17/21/25 on Linux, or 8/11/17/21/25 on Windows, depending on the Minecraft version. If Java is missing or too old, the installer can download a local Temurin JDK.
 
-### Linux
+The automatic JDK download supports x64 and aarch64.
 
-Releases from `1.18.2` through the latest `26.x` releases. Older versions are excluded for security reasons. Snapshots are excluded. The installer validates the version against a built-in release list.
+## Versions
 
-Examples:
+- **Linux:** Minecraft `1.18.2` to `26.x`; older versions and snapshots are excluded.
+- **Windows installer (v1.3):** `1.8.9` and `1.16` to `26.x`; snapshots are excluded.
 
-- `1.18.2`
-- `1.19` - `1.19.4`
-- `1.20` - `1.20.6`
-- `1.21` - `1.21.11`
-- `26.1` - `26.3`
-
-### Windows
-
-The Windows installer (v1.3) still supports releases from `1.8.9` and `1.16` through the latest `26.x` releases. Snapshots are excluded.
-
-## Mod loaders
-
-| Loader   | Source         | Notes                                |
-| -------- | -------------- | ------------------------------------ |
-| Vanilla  | Mojang         | Official server jar                  |
-| Fabric   | FabricMC       | Downloads the Fabric server launcher |
-| Forge    | MinecraftForge | Classic modding platform             |
-| NeoForge | NeoForged      | Modern Forge fork; 1.20.1+           |
-
-Some loader/version combinations are not published by the loader authors. The installer detects this and stops with a clear error instead of downloading something invalid.
+Loaders: Vanilla, Fabric, Forge, and NeoForge. Unsupported loader/version combinations stop with a clear error.
 
 ## Java
 
-The installer detects the installed Java version. If it is missing or too old for the selected Minecraft version, it offers to download a local Temurin JDK into the server folder:
+The installer uses the system Java when it is recent enough. Otherwise, it offers a local Temurin JDK:
 
-- Linux: Temurin LTS builds (17, 21, 25)
-- Windows: Temurin LTS builds (8, 11, 17, 21, 25)
-- Downloaded from the Adoptium API
-- SHA-256 checksum verification
-- Linux: extracted to `<server>/.jdk`
-- Windows: extracted to `<server>\.jdk\home`
-- The generated `run.sh`/`run.bat` and the Forge/NeoForge installer use this local JDK
+- Linux: Java 17, 21, or 25, extracted to `<server>/.jdk`
+- Windows: Java 8, 11, 17, 21, or 25, extracted to `<server>\.jdk\home`
+- Used only by that server; nothing is installed system-wide
+- Deleted with the server folder, not with `world/` alone
+- Verified with SHA-256
 
-If you decline the download, the installer cancels without creating the server.
+If you decline the JDK download, the installer cancels.
 
-## What gets created
+## Security
 
-```text
-<server-name>/
-├── eula.txt
-├── run.sh (Linux) or run.bat (Windows)
-└── <server or installer jar>
-```
-
-When a local JDK is used, it is stored in `.jdk/` on Linux or `.jdk\home` on Windows.
-
-For Forge and NeoForge, the installer creates the usual libraries and launch scripts. On Windows, `run.bat` is used; when a local JDK is selected, it wraps the Forge/NeoForge launcher so the bundled Java is used.
-
-## Security notes
-
-- Files are downloaded over HTTPS from official sources: Mojang, FabricMC, MinecraftForge, NeoForged, and Adoptium. The Linux installer rejects non-HTTPS URLs and redirects.
-- The optional JDK download is verified against its SHA-256 checksum.
-- The installer does not use `sudo`. The Linux installer refuses to run as root and only writes to the new server folder and a temporary directory.
-- On Windows, PowerShell is used for JSON parsing, checksums, and ZIP extraction.
-- Forge and NeoForge installers are executed locally; this is required by those loaders.
-- On Linux, the installer asks you to accept the Minecraft EULA and writes `eula=true` only after acceptance; declining cancels. The Windows installer (v1.3) still writes `eula=true` directly.
-- Mods and plugins run with your user's permissions. Only use trusted ones and do not run the server as root.
+- Downloads come from official HTTPS sources; the Linux installer rejects non-HTTPS URLs and redirects.
+- Server files are checked with SHA-1 when the source provides one.
+- No `sudo`; Linux refuses root and only writes to the new server folder and a temporary directory.
+- Linux asks for EULA acceptance and writes `eula=true` only after acceptance. Windows v1.3 writes it directly.
+- Forge/NeoForge installers run locally. Only use trusted mods and plugins.
 
 ## Disclaimer
 
