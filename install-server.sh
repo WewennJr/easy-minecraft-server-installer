@@ -7,17 +7,14 @@
 set -euo pipefail
 
 APP_NAME="Easy Minecraft Server Installer"
-APP_VERSION="1.3"
+APP_VERSION="1.4"
 
 VERSIONS=(
   26.3 26.2 26.1.2 26.1.1 26.1
   1.21.11 1.21.10 1.21.9 1.21.8 1.21.7 1.21.6 1.21.5 1.21.4 1.21.3 1.21.2 1.21.1 1.21
   1.20.6 1.20.5 1.20.4 1.20.3 1.20.2 1.20.1 1.20
   1.19.4 1.19.3 1.19.2 1.19.1 1.19
-  1.18.2 1.18.1 1.18
-  1.17.1 1.17
-  1.16.5 1.16.4 1.16.3 1.16.2 1.16.1 1.16
-  1.8.9
+  1.18.2
 )
 
 MANIFEST_URL="https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
@@ -26,6 +23,8 @@ FABRIC_LOADER_URL="https://meta.fabricmc.net/v2/versions/loader"
 FABRIC_INSTALLER_URL="https://meta.fabricmc.net/v2/versions/installer"
 NEOFORGE_MAVEN="https://maven.neoforged.net/releases/net/neoforged"
 ADOPTIUM_ASSETS_URL="https://api.adoptium.net/v3/assets/latest"
+EULA_URL="https://www.minecraft.net/eula"
+CURL_HTTPS=(--proto '=https' --proto-redir '=https')
 
 if [[ -t 1 ]]; then
   C_RESET=$'\033[0m'
@@ -58,6 +57,7 @@ LOADER_DETAIL=""
 JAVA_REQUIRED=""
 MC_META=""
 SERVER_DIR=""
+EULA_ACCEPTED=0
 
 JAVA_MODE="system"
 JAVA_BIN="java"
@@ -72,7 +72,19 @@ log()  { printf '%s\n' "$*"; }
 warn() { printf '%sWarning:%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
 die()  { printf '%sError:%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
 ok()   { printf '%s%s%s\n' "$C_GREEN" "$*" "$C_RESET"; }
-cancel() { printf '%sCancelled.%s\n' "$C_YELLOW" "$C_RESET"; exit 0; }
+cancel() {
+  if (($#)); then
+    printf '%sCancelled:%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2
+  else
+    printf '%sCancelled.%s\n' "$C_YELLOW" "$C_RESET"
+  fi
+  exit 0
+}
+
+require_https() {
+  local url=$1
+  [[ "${url,,}" == https://* ]] || cancel "Refusing non-HTTPS URL: $url"
+}
 
 section() {
   printf '\n%s▸ %s%s\n' "$C_BOLD$C_BLUE" "$*" "$C_RESET"
@@ -87,7 +99,19 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "'$1' is required but was not found."
 }
 
+if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+  die "Do not run this installer as root."
+fi
+
+require_https "$MANIFEST_URL"
+require_https "$FORGE_PROMOS_URL"
+require_https "$FABRIC_LOADER_URL"
+require_https "$FABRIC_INSTALLER_URL"
+require_https "$NEOFORGE_MAVEN"
+require_https "$ADOPTIUM_ASSETS_URL"
+
 need_cmd curl
+need_cmd tar
 
 TMP_DIR=$(mktemp -d) || die "Could not create a temporary directory."
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -412,17 +436,19 @@ ask_memory() {
 fetch_mc_meta() {
   local manifest="$TMP_DIR/manifest.json"
   local meta_url
-  curl -fsSL --retry 3 "$MANIFEST_URL" -o "$manifest" || die "Could not download the Mojang manifest."
+  curl "${CURL_HTTPS[@]}" -fsSL --retry 3 "$MANIFEST_URL" -o "$manifest" || die "Could not download the Mojang manifest."
   meta_url=$(manifest_url "$manifest" "$VERSION")
   [[ -n "$meta_url" ]] || die "Version $VERSION was not found in the Mojang manifest."
+  require_https "$meta_url"
   MC_META="$TMP_DIR/mc-$VERSION.json"
-  curl -fsSL --retry 3 "$meta_url" -o "$MC_META" || die "Could not download metadata for $VERSION."
+  curl "${CURL_HTTPS[@]}" -fsSL --retry 3 "$meta_url" -o "$MC_META" || die "Could not download metadata for $VERSION."
   JAVA_REQUIRED=$(mc_java_major "$MC_META")
 }
 
 resolve_vanilla() {
   JAR_URL=$(mc_server_url "$MC_META")
   [[ -n "$JAR_URL" ]] || die "Vanilla server URL not found for $VERSION."
+  require_https "$JAR_URL"
   JAR_SHA1=$(mc_server_sha1 "$MC_META")
   JAR_NAME="server.jar"
   LOADER_DETAIL="Vanilla"
@@ -432,14 +458,15 @@ resolve_fabric() {
   local loader_json="$TMP_DIR/fabric-loader.json"
   local installer_json="$TMP_DIR/fabric-installer.json"
   local loader installer
-  curl -fsSL --retry 3 "${FABRIC_LOADER_URL}/${VERSION}" -o "$loader_json" 2>/dev/null \
+  curl "${CURL_HTTPS[@]}" -fsSL --retry 3 "${FABRIC_LOADER_URL}/${VERSION}" -o "$loader_json" 2>/dev/null \
     || die "Fabric does not support Minecraft $VERSION."
   loader=$(fabric_loader_version "$loader_json")
   [[ -n "$loader" ]] || die "No Fabric loader is available for Minecraft $VERSION."
-  curl -fsSL --retry 3 "$FABRIC_INSTALLER_URL" -o "$installer_json" || die "Could not fetch the Fabric installer."
+  curl "${CURL_HTTPS[@]}" -fsSL --retry 3 "$FABRIC_INSTALLER_URL" -o "$installer_json" || die "Could not fetch the Fabric installer."
   installer=$(fabric_installer_version "$installer_json")
   [[ -n "$installer" ]] || die "Fabric installer version not found."
   JAR_URL="${FABRIC_LOADER_URL}/${VERSION}/${loader}/${installer}/server/jar"
+  require_https "$JAR_URL"
   JAR_SHA1=""
   JAR_NAME="fabric-server-mc.${VERSION}-loader.${loader}-launcher.${installer}.jar"
   LOADER_DETAIL="Fabric loader ${loader} (installer ${installer})"
@@ -448,12 +475,13 @@ resolve_fabric() {
 resolve_forge() {
   local promos="$TMP_DIR/forge-promos.json"
   local fv
-  curl -fsSL --retry 3 "$FORGE_PROMOS_URL" -o "$promos" || die "Could not fetch Forge versions."
+  curl "${CURL_HTTPS[@]}" -fsSL --retry 3 "$FORGE_PROMOS_URL" -o "$promos" || die "Could not fetch Forge versions."
   fv=$(forge_promoted_version "$promos" "$VERSION")
   [[ -n "$fv" ]] || die "Forge has no build for Minecraft $VERSION."
   JAR_URL="https://maven.minecraftforge.net/net/minecraftforge/forge/${VERSION}-${fv}/forge-${VERSION}-${fv}-installer.jar"
+  require_https "$JAR_URL"
   JAR_NAME="forge-${VERSION}-${fv}-installer.jar"
-  JAR_SHA1=$(curl -fsSL --retry 3 "${JAR_URL}.sha1" 2>/dev/null | tr -d '[:space:]' || true)
+  JAR_SHA1=$(curl "${CURL_HTTPS[@]}" -fsSL --retry 3 "${JAR_URL}.sha1" 2>/dev/null | tr -d '[:space:]' || true)
   LOADER_DETAIL="Forge ${fv}"
 }
 
@@ -462,11 +490,11 @@ resolve_neoforge() {
   if [[ "$VERSION" == "1.20.1" ]]; then
     artifact="forge"
     xml="$TMP_DIR/neoforge-forge.xml"
-    curl -fsSL --retry 3 "${NEOFORGE_MAVEN}/forge/maven-metadata.xml" -o "$xml" || die "Could not fetch NeoForge versions."
+    curl "${CURL_HTTPS[@]}" -fsSL --retry 3 "${NEOFORGE_MAVEN}/forge/maven-metadata.xml" -o "$xml" || die "Could not fetch NeoForge versions."
   else
     artifact="neoforge"
     xml="$TMP_DIR/neoforge.xml"
-    curl -fsSL --retry 3 "${NEOFORGE_MAVEN}/neoforge/maven-metadata.xml" -o "$xml" || die "Could not fetch NeoForge versions."
+    curl "${CURL_HTTPS[@]}" -fsSL --retry 3 "${NEOFORGE_MAVEN}/neoforge/maven-metadata.xml" -o "$xml" || die "Could not fetch NeoForge versions."
   fi
   fv=$(neoforge_build_version "$xml" "$VERSION")
   [[ -n "$fv" ]] || die "NeoForge has no stable build for Minecraft $VERSION (1.20.1 minimum; some versions are not supported)."
@@ -475,8 +503,9 @@ resolve_neoforge() {
   else
     JAR_URL="${NEOFORGE_MAVEN}/neoforge/${fv}/neoforge-${fv}-installer.jar"
   fi
+  require_https "$JAR_URL"
   JAR_NAME="${artifact}-${fv}-installer.jar"
-  JAR_SHA1=$(curl -fsSL --retry 3 "${JAR_URL}.sha1" 2>/dev/null | tr -d '[:space:]' || true)
+  JAR_SHA1=$(curl "${CURL_HTTPS[@]}" -fsSL --retry 3 "${JAR_URL}.sha1" 2>/dev/null | tr -d '[:space:]' || true)
   LOADER_DETAIL="NeoForge ${fv}"
 }
 
@@ -492,7 +521,7 @@ resolve_jar() {
 
 next_jdk_feature() {
   local required=$1 feature
-  for feature in 8 11 17 21 25; do
+  for feature in 17 21 25; do
     if (( feature >= required )); then
       printf '%s\n' "$feature"
       return 0
@@ -565,7 +594,6 @@ assess_java() {
 
 download_local_jdk() {
   local feature=$1
-  need_cmd tar
   local system arch api_url json meta link checksum filename size archive actual
   system=$(uname -s)
   [[ "$system" == "Linux" ]] || die "Automatic JDK download is only supported on Linux."
@@ -577,17 +605,19 @@ download_local_jdk() {
 
   section "Downloading Java ${feature}"
   api_url="${ADOPTIUM_ASSETS_URL}/${feature}/hotspot?architecture=${arch}&image_type=jdk&os=linux&vendor=eclipse"
+  require_https "$api_url"
   json="$TMP_DIR/adoptium-${feature}.json"
-  curl -fsSL --retry 3 "$api_url" -o "$json" || die "The Adoptium API is unreachable."
+  curl "${CURL_HTTPS[@]}" -fsSL --retry 3 "$api_url" -o "$json" || die "The Adoptium API is unreachable."
   link=$(adoptium_package_field "$json" "link")
   checksum=$(adoptium_package_field "$json" "checksum")
   filename=$(adoptium_package_field "$json" "name")
   size=$(adoptium_package_field "$json" "size")
   [[ -n "$link" && -n "$checksum" ]] || die "No Temurin ${feature} JDK is available for this platform."
+  require_https "$link"
 
   archive="$SERVER_DIR/.jdk.tar.gz"
   log "Downloading ${filename} ($(( size / 1048576 )) MB)..."
-  curl -fL --retry 3 --progress-bar -o "$archive" "$link" || die "JDK download failed."
+  curl "${CURL_HTTPS[@]}" -fL --retry 3 --progress-bar -o "$archive" "$link" || die "JDK download failed."
 
   actual=$(sha256_of "$archive") || die "No SHA-256 tool found (sha256sum, shasum, or openssl)."
   if [[ "$actual" != "$checksum" ]]; then
@@ -632,6 +662,16 @@ confirm() {
   esac
 }
 
+accept_eula() {
+  local answer
+  printf 'Do you accept the Minecraft EULA? %s%s%s [y/N] ' "$C_DIM" "$EULA_URL" "$C_RESET"
+  IFS= read -r answer || die "Input interrupted."
+  case "$answer" in
+    y|Y|yes|Yes) EULA_ACCEPTED=1; return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 write_run_script() {
   {
     printf '#!/usr/bin/env bash\n'
@@ -645,6 +685,11 @@ write_run_script() {
     fi
   } > run.sh
   chmod +x run.sh
+}
+
+write_eula() {
+  (( EULA_ACCEPTED == 1 )) || die "The Minecraft EULA must be accepted before creating eula.txt."
+  printf 'eula=true\n' > eula.txt
 }
 
 apply_forge_memory() {
@@ -689,6 +734,10 @@ main() {
   if ! confirm; then
     cancel
   fi
+  if ! accept_eula; then
+    warn "You must accept the Minecraft EULA to continue."
+    cancel
+  fi
 
   mkdir -p "$SERVER_DIR" || die "Could not create folder '$SERVER_DIR'."
   cd "$SERVER_DIR" || die "Could not enter '$SERVER_DIR'."
@@ -699,7 +748,8 @@ main() {
 
   section "Downloading server"
   log "File: $JAR_NAME"
-  curl -fL --retry 3 --progress-bar -o "$JAR_NAME" "$JAR_URL" || die "Download failed."
+  require_https "$JAR_URL"
+  curl "${CURL_HTTPS[@]}" -fL --retry 3 --progress-bar -o "$JAR_NAME" "$JAR_URL" || die "Download failed."
   [[ -s "$JAR_NAME" ]] || die "The downloaded file is empty."
 
   if [[ -n "$JAR_SHA1" ]]; then
@@ -721,12 +771,12 @@ main() {
     section "Installing server ($LOADER)"
     "$JAVA_BIN" -jar "$JAR_NAME" --installServer || die "Server installation failed."
     apply_forge_memory
-    printf 'eula=true\n' > eula.txt
+    write_eula
     wrap_forge_run_script
     [[ -f run.sh ]] && chmod +x run.sh
   else
     write_run_script
-    printf 'eula=true\n' > eula.txt
+    write_eula
   fi
 
   printf '\n%s✔ Server ready%s in %s%s%s\n' "$C_BOLD$C_GREEN" "$C_RESET" "$C_BOLD" "$SERVER_DIR" "$C_RESET"

@@ -8,6 +8,9 @@ It asks for a server name, a Minecraft release, a mod loader, and the maximum me
 
 - Vanilla, Fabric, Forge, and NeoForge support
 - Release versions only (snapshots excluded)
+- Linux: Minecraft 1.18.2+ only, with older versions excluded for security
+- Linux: explicit Minecraft EULA acceptance before the server is created
+- Linux: refuses to run as root and enforces HTTPS downloads
 - Correct server or installer downloaded from official sources
 - Linux and Windows installers (`install-server.sh` and `install-server.bat`)
 - Tab completion for versions and mod loaders on Linux
@@ -25,8 +28,10 @@ It asks for a server name, a Minecraft release, a mod loader, and the maximum me
 
 - `bash`
 - `curl`
-- `tar` (only when the automatic JDK download is used)
-- Java 8, 11, 17, 21, or 25 depending on the Minecraft version, or accept the local JDK download
+- `tar`
+- Java 17, 21, or 25 depending on the Minecraft version, or accept the local JDK download
+- A non-root user: the installer refuses to run as root
+- HTTPS access to the official sources: non-HTTPS URLs are rejected
 
 ### Windows
 
@@ -46,6 +51,8 @@ chmod +x install-server.sh
 ./install-server.sh
 ```
 
+Do not run it with `sudo` or as root; the installer refuses to start as root.
+
 ### Windows
 
 Double-click `install-server.bat`, or run it from Command Prompt:
@@ -60,6 +67,8 @@ You will be prompted for:
 2. Minecraft version
 3. Mod loader
 4. Maximum server memory in GB (default: 2)
+
+On Linux, you must also accept the Minecraft EULA before the server folder is created. If you decline, the installer cancels.
 
 Review the summary, confirm, and the server is created in the current directory.
 
@@ -79,15 +88,21 @@ run.bat
 
 ## Supported versions
 
-Releases from 1.8.9 and 1.16 through the latest 26.x releases. Snapshots are excluded. The installer validates the version against a built-in release list.
+### Linux
+
+Releases from `1.18.2` through the latest `26.x` releases. Older versions are excluded for security reasons. Snapshots are excluded. The installer validates the version against a built-in release list.
 
 Examples:
 
-- `1.8.9`
-- `1.16` - `1.16.5`
+- `1.18.2`
+- `1.19` - `1.19.4`
 - `1.20` - `1.20.6`
 - `1.21` - `1.21.11`
 - `26.1` - `26.3`
+
+### Windows
+
+The Windows installer (v1.3) still supports releases from `1.8.9` and `1.16` through the latest `26.x` releases. Snapshots are excluded.
 
 ## Mod loaders
 
@@ -104,7 +119,8 @@ Some loader/version combinations are not published by the loader authors. The in
 
 The installer detects the installed Java version. If it is missing or too old for the selected Minecraft version, it offers to download a local Temurin JDK into the server folder:
 
-- Temurin LTS builds (8, 11, 17, 21, 25)
+- Linux: Temurin LTS builds (17, 21, 25)
+- Windows: Temurin LTS builds (8, 11, 17, 21, 25)
 - Downloaded from the Adoptium API
 - SHA-256 checksum verification
 - Linux: extracted to `<server>/.jdk`
@@ -128,12 +144,12 @@ For Forge and NeoForge, the installer creates the usual libraries and launch scr
 
 ## Security notes
 
-- Files are downloaded over HTTPS from official sources: Mojang, FabricMC, MinecraftForge, NeoForged, and Adoptium.
+- Files are downloaded over HTTPS from official sources: Mojang, FabricMC, MinecraftForge, NeoForged, and Adoptium. The Linux installer rejects non-HTTPS URLs and redirects.
 - The optional JDK download is verified against its SHA-256 checksum.
-- The installer does not use `sudo` and only writes to the new server folder and a temporary directory.
+- The installer does not use `sudo`. The Linux installer refuses to run as root and only writes to the new server folder and a temporary directory.
 - On Windows, PowerShell is used for JSON parsing, checksums, and ZIP extraction.
 - Forge and NeoForge installers are executed locally; this is required by those loaders.
-- The installer writes `eula=true`, which means you accept the Minecraft EULA. Make sure you comply with it.
+- On Linux, the installer asks you to accept the Minecraft EULA and writes `eula=true` only after acceptance; declining cancels. The Windows installer (v1.3) still writes `eula=true` directly.
 - Mods and plugins run with your user's permissions. Only use trusted ones and do not run the server as root.
 
 ## Disclaimer
