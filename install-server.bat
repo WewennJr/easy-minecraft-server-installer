@@ -1,7 +1,19 @@
 @echo off
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
 
+set "APP_NAME=Easy Minecraft Server Installer"
+set "APP_VERSION=1.5"
+
+if /i "%~1"=="--help" goto :usage
+if /i "%~1"=="-h" goto :usage
+if /i "%~1"=="/?" goto :usage
 if /i "%~1"=="--mc-installer-child" goto :run
+if not "%~1"=="" (
+  set "BAD=%~1"
+  >&2 echo Error: Unknown option: !BAD! ^(use --help^)
+  endlocal
+  exit /b 1
+)
 
 cmd /c ""%~f0" --mc-installer-child"
 set "RC=%errorlevel%"
@@ -15,10 +27,7 @@ rem Easy Minecraft Server Installer
 rem Creates a ready-to-run Minecraft server (vanilla, Fabric, Forge, NeoForge)
 rem by downloading the correct files from official sources and preparing the folder.
 
-set "APP_NAME=Easy Minecraft Server Installer"
-set "APP_VERSION=1.3"
-
-set "VERSIONS=26.3 26.2 26.1.2 26.1.1 26.1 1.21.11 1.21.10 1.21.9 1.21.8 1.21.7 1.21.6 1.21.5 1.21.4 1.21.3 1.21.2 1.21.1 1.21 1.20.6 1.20.5 1.20.4 1.20.3 1.20.2 1.20.1 1.20 1.19.4 1.19.3 1.19.2 1.19.1 1.19 1.18.2 1.18.1 1.18 1.17.1 1.17 1.16.5 1.16.4 1.16.3 1.16.2 1.16.1 1.16 1.8.9"
+set "VERSIONS=26.3 26.2 26.1.2 26.1.1 26.1 1.21.11 1.21.10 1.21.9 1.21.8 1.21.7 1.21.6 1.21.5 1.21.4 1.21.3 1.21.2 1.21.1 1.21 1.20.6 1.20.5 1.20.4 1.20.3 1.20.2 1.20.1 1.20 1.19.4 1.19.3 1.19.2 1.19.1 1.19 1.18.2"
 
 set "MANIFEST_URL=https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
 set "FORGE_PROMOS_URL=https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json"
@@ -26,7 +35,12 @@ set "FABRIC_LOADER_URL=https://meta.fabricmc.net/v2/versions/loader"
 set "FABRIC_INSTALLER_URL=https://meta.fabricmc.net/v2/versions/installer"
 set "NEOFORGE_MAVEN=https://maven.neoforged.net/releases/net/neoforged"
 set "ADOPTIUM_ASSETS_URL=https://api.adoptium.net/v3/assets/latest"
+set "EULA_URL=https://www.minecraft.net/eula"
 
+set "EULA_ACCEPTED=0"
+set "LOG_FILE="
+set "LOG_BUFFER="
+set "TMP_DIR="
 set "NAME="
 set "VERSION="
 set "LOADER="
@@ -48,6 +62,13 @@ set "LOCAL_JAVA_HOME="
 set "PS_OUT="
 set "PS_EXPR="
 
+call :require_https "%MANIFEST_URL%"
+call :require_https "%FORGE_PROMOS_URL%"
+call :require_https "%FABRIC_LOADER_URL%"
+call :require_https "%FABRIC_INSTALLER_URL%"
+call :require_https "%NEOFORGE_MAVEN%"
+call :require_https "%ADOPTIUM_ASSETS_URL%"
+
 where curl.exe >nul 2>&1
 if errorlevel 1 call :die "curl.exe is required but was not found."
 where powershell.exe >nul 2>&1
@@ -56,6 +77,11 @@ if errorlevel 1 call :die "powershell.exe is required but was not found."
 set "TMP_DIR=%TEMP%\mc-installer-%RANDOM%-%RANDOM%"
 mkdir "%TMP_DIR%" >nul 2>&1
 if errorlevel 1 call :die "Could not create a temporary directory."
+set "LOG_BUFFER=%TMP_DIR%\install-server.log"
+type nul > "%LOG_BUFFER%" 2>nul
+call :log "Starting %APP_NAME% v%APP_VERSION%"
+call :log "Working directory: %CD%"
+call :log "Script: %~f0"
 
 goto :main
 
@@ -69,18 +95,36 @@ call :resolve_jar
 call :assess_java
 call :print_summary
 call :confirm
-if errorlevel 1 call :cancel
+if errorlevel 1 (
+  call :log "Creation declined"
+  call :cancel
+)
+call :log "Creation confirmed"
+call :accept_eula
+if errorlevel 1 (
+  call :log "EULA declined"
+  call :warn "You must accept the Minecraft EULA to continue."
+  call :cancel
+)
+call :log "EULA accepted"
 
+call :log "Creating server folder: %SERVER_DIR%"
 mkdir "%SERVER_DIR%" >nul 2>&1
 if errorlevel 1 call :die "Could not create the server folder."
 cd /d "%SERVER_DIR%"
 if errorlevel 1 call :die "Could not enter the server folder."
+call :start_logging
+if errorlevel 1 call :warn "Could not create the log file in %SERVER_DIR%."
+call :log "Entered server folder: %SERVER_DIR%"
 
 if "%JAVA_MODE%"=="local" call :download_local_jdk
 
 call :section "Downloading server"
 echo File: %JAR_NAME%
-curl.exe -fL --retry 3 --progress-bar -o "%JAR_NAME%" "%JAR_URL%"
+call :log "File: %JAR_NAME%"
+call :require_https "%JAR_URL%"
+call :log "Downloading server: %JAR_URL%"
+curl.exe --proto "=https" --proto-redir "=https" -fL --retry 3 --progress-bar -o "%JAR_NAME%" "%JAR_URL%"
 if errorlevel 1 call :die "Download failed."
 if not exist "%JAR_NAME%" call :die "The downloaded file is empty."
 for %%A in ("%JAR_NAME%") do set "JAR_SIZE=%%~zA"
@@ -105,23 +149,25 @@ if "%LOADER%"=="forge" goto :main_install_forge
 if "%LOADER%"=="neoforge" goto :main_install_forge
 call :write_run_bat
 if not exist "run.bat" call :die "Could not create run.bat."
-> eula.txt echo eula=true
-if not exist "eula.txt" call :die "Could not create eula.txt."
+call :write_eula
 goto :main_done
 
 :main_install_forge
 call :section "Installing server (%LOADER%)"
+call :log "Running %LOADER% installer: %JAR_NAME%"
 "%JAVA_BIN%" -jar "%JAR_NAME%" --installServer
 if errorlevel 1 call :die "Server installation failed."
 call :apply_forge_memory
-> eula.txt echo eula=true
-if not exist "eula.txt" call :die "Could not create eula.txt."
+call :write_eula
 call :wrap_forge_run_script
+call :log "%LOADER% installation finished"
 
 :main_done
+call :log "Server ready: %SERVER_DIR%"
 echo.
 echo Server ready in "%SERVER_DIR%"
 echo   Start: cd /d "%SERVER_DIR%" ^&^& run.bat
+if defined LOG_FILE echo   Log: !LOG_FILE!
 goto :cleanup_ok
 
 :print_banner
@@ -131,25 +177,80 @@ echo Create a Minecraft server in a few steps.
 goto :eof
 
 :section
+set "MSG=%~1"
 echo.
-echo === %~1 ===
+echo === !MSG! ===
+call :log "== %~1 =="
 goto :eof
 
 :ok
-echo %~1
+set "MSG=%~1"
+echo !MSG!
+call :log "%~1"
 goto :eof
 
 :warn
->&2 echo Warning: %~1
+set "MSG=%~1"
+>&2 echo Warning: !MSG!
+call :log "Warning: %~1"
 goto :eof
 
 :die
->&2 echo Error: %~1
+set "MSG=%~1"
+>&2 echo Error: !MSG!
+call :log "Error: %~1"
+if defined LOG_FILE >&2 echo Log: !LOG_FILE!
 goto :cleanup_fail
 
 :cancel
-echo Cancelled.
+if "%~1"=="" (
+  echo Cancelled.
+  call :log "Cancelled."
+) else (
+  set "MSG=%~1"
+  >&2 echo Cancelled: !MSG!
+  call :log "Cancelled: %~1"
+)
+if defined LOG_FILE echo Log: !LOG_FILE!
 goto :cleanup_ok
+
+:log
+set "LOG_MSG=%~1"
+if defined LOG_FILE (
+  >>"%LOG_FILE%" echo [%DATE% %TIME%] !LOG_MSG!
+) else if defined LOG_BUFFER (
+  >>"%LOG_BUFFER%" echo [%DATE% %TIME%] !LOG_MSG!
+)
+goto :eof
+
+:start_logging
+set "LOG_FILE=%SERVER_DIR%\install-server-%NAME%.log"
+type "%LOG_BUFFER%" > "%LOG_FILE%" 2>nul
+if errorlevel 1 (
+  set "LOG_FILE="
+  exit /b 1
+)
+exit /b 0
+
+:require_https
+set "URL=%~1"
+if /i not "%URL:~0,8%"=="https://" call :die "Refusing non-HTTPS URL: %URL%"
+goto :eof
+
+:accept_eula
+set "ANSWER="
+set /p "ANSWER=Do you accept the Minecraft EULA? %EULA_URL% [y/N] "
+call :ps_yes
+if errorlevel 1 exit /b 1
+set "EULA_ACCEPTED=1"
+exit /b 0
+
+:write_eula
+if not "%EULA_ACCEPTED%"=="1" call :die "The Minecraft EULA must be accepted before creating eula.txt."
+> eula.txt echo eula=true
+if not exist "eula.txt" call :die "Could not create eula.txt."
+call :log "Wrote eula.txt"
+goto :eof
 
 :ps_run
 set "PS_OUT="
@@ -175,10 +276,7 @@ echo   26.x     26.1 - 26.3
 echo   1.21.x   1.21 - 1.21.11
 echo   1.20.x   1.20 - 1.20.6
 echo   1.19.x   1.19 - 1.19.4
-echo   1.18.x   1.18 - 1.18.2
-echo   1.17.x   1.17 - 1.17.1
-echo   1.16.x   1.16 - 1.16.5
-echo   1.8.x    1.8.9
+echo   1.18.x   1.18.2
 goto :eof
 
 :ask_name
@@ -291,7 +389,7 @@ goto :eof
 
 :fetch_mc_meta
 set "MANIFEST=%TMP_DIR%\manifest.json"
-curl.exe -fsSL --retry 3 -o "%MANIFEST%" "%MANIFEST_URL%"
+curl.exe --proto "=https" --proto-redir "=https" -fsSL --retry 3 -o "%MANIFEST%" "%MANIFEST_URL%"
 if errorlevel 1 call :die "Could not download the Mojang manifest."
 set "JSON_FILE=%MANIFEST%"
 set "MC_VERSION=%VERSION%"
@@ -299,7 +397,8 @@ set "PS_EXPR=$d=Get-Content -Raw -LiteralPath $env:JSON_FILE | ConvertFrom-Json;
 call :ps_run
 if not defined PS_OUT call :die "Version %VERSION% was not found in the Mojang manifest."
 set "MC_META=%TMP_DIR%\mc-%VERSION%.json"
-curl.exe -fsSL --retry 3 -o "%MC_META%" "%PS_OUT%"
+call :require_https "%PS_OUT%"
+curl.exe --proto "=https" --proto-redir "=https" -fsSL --retry 3 -o "%MC_META%" "%PS_OUT%"
 if errorlevel 1 call :die "Could not download metadata for %VERSION%."
 set "JSON_FILE=%MC_META%"
 set "PS_EXPR=$d=Get-Content -Raw -LiteralPath $env:JSON_FILE | ConvertFrom-Json; $d.javaVersion.majorVersion"
@@ -313,6 +412,7 @@ set "PS_EXPR=$d=Get-Content -Raw -LiteralPath $env:JSON_FILE | ConvertFrom-Json;
 call :ps_run
 if not defined PS_OUT call :die "Vanilla server URL not found for %VERSION%."
 set "JAR_URL=%PS_OUT%"
+call :require_https "%JAR_URL%"
 set "PS_EXPR=$d=Get-Content -Raw -LiteralPath $env:JSON_FILE | ConvertFrom-Json; $s=$d.downloads.server.sha1; if ($s -match '^[0-9a-fA-F]{40}$') { $s.ToLower() }"
 call :ps_run
 set "JAR_SHA1=%PS_OUT%"
@@ -322,7 +422,7 @@ goto :eof
 
 :resolve_fabric
 set "LOADER_JSON=%TMP_DIR%\fabric-loader.json"
-curl.exe -fsSL --retry 3 -o "%LOADER_JSON%" "%FABRIC_LOADER_URL%/%VERSION%" 2>nul
+curl.exe --proto "=https" --proto-redir "=https" -fsSL --retry 3 -o "%LOADER_JSON%" "%FABRIC_LOADER_URL%/%VERSION%" 2>nul
 if errorlevel 1 call :die "Fabric does not support Minecraft %VERSION%."
 set "JSON_FILE=%LOADER_JSON%"
 set "PS_EXPR=$d=@(Get-Content -Raw -LiteralPath $env:JSON_FILE | ConvertFrom-Json); if ($d.Count -eq 0) { exit 1 }; $s=$d | Where-Object { $_.loader.stable } | Select-Object -First 1; if ($s) { $s.loader.version } else { ($d | Select-Object -First 1).loader.version }"
@@ -330,7 +430,7 @@ call :ps_run
 if not defined PS_OUT call :die "No Fabric loader is available for Minecraft %VERSION%."
 set "FABRIC_LOADER=%PS_OUT%"
 set "INSTALLER_JSON=%TMP_DIR%\fabric-installer.json"
-curl.exe -fsSL --retry 3 -o "%INSTALLER_JSON%" "%FABRIC_INSTALLER_URL%"
+curl.exe --proto "=https" --proto-redir "=https" -fsSL --retry 3 -o "%INSTALLER_JSON%" "%FABRIC_INSTALLER_URL%"
 if errorlevel 1 call :die "Could not fetch the Fabric installer."
 set "JSON_FILE=%INSTALLER_JSON%"
 set "PS_EXPR=$d=@(Get-Content -Raw -LiteralPath $env:JSON_FILE | ConvertFrom-Json); if ($d.Count -eq 0) { exit 1 }; $s=$d | Where-Object { $_.stable } | Select-Object -First 1; if ($s) { $s.version } else { ($d | Select-Object -First 1).version }"
@@ -338,6 +438,7 @@ call :ps_run
 if not defined PS_OUT call :die "Fabric installer version not found."
 set "FABRIC_INSTALLER=%PS_OUT%"
 set "JAR_URL=%FABRIC_LOADER_URL%/%VERSION%/%FABRIC_LOADER%/%FABRIC_INSTALLER%/server/jar"
+call :require_https "%JAR_URL%"
 set "JAR_SHA1="
 set "JAR_NAME=fabric-server-mc.%VERSION%-loader.%FABRIC_LOADER%-launcher.%FABRIC_INSTALLER%.jar"
 set "LOADER_DETAIL=Fabric loader %FABRIC_LOADER% (installer %FABRIC_INSTALLER%)"
@@ -345,7 +446,7 @@ goto :eof
 
 :resolve_forge
 set "PROMOS=%TMP_DIR%\forge-promos.json"
-curl.exe -fsSL --retry 3 -o "%PROMOS%" "%FORGE_PROMOS_URL%"
+curl.exe --proto "=https" --proto-redir "=https" -fsSL --retry 3 -o "%PROMOS%" "%FORGE_PROMOS_URL%"
 if errorlevel 1 call :die "Could not fetch Forge versions."
 set "JSON_FILE=%PROMOS%"
 set "MC_VERSION=%VERSION%"
@@ -354,6 +455,7 @@ call :ps_run
 if not defined PS_OUT call :die "Forge has no build for Minecraft %VERSION%."
 set "FORGE_VERSION=%PS_OUT%"
 set "JAR_URL=https://maven.minecraftforge.net/net/minecraftforge/forge/%VERSION%-%FORGE_VERSION%/forge-%VERSION%-%FORGE_VERSION%-installer.jar"
+call :require_https "%JAR_URL%"
 set "JAR_NAME=forge-%VERSION%-%FORGE_VERSION%-installer.jar"
 call :fetch_sha1 "%JAR_URL%"
 set "LOADER_DETAIL=Forge %FORGE_VERSION%"
@@ -362,7 +464,7 @@ goto :eof
 :fetch_sha1
 set "JAR_SHA1="
 set "SHA1_FILE=%TMP_DIR%\sha1.txt"
-curl.exe -fsSL --retry 3 -o "%SHA1_FILE%" "%~1.sha1" >nul 2>&1
+curl.exe --proto "=https" --proto-redir "=https" -fsSL --retry 3 -o "%SHA1_FILE%" "%~1.sha1" >nul 2>&1
 if errorlevel 1 goto :eof
 set "PS_EXPR=$h=((Get-Content -Raw -LiteralPath $env:SHA1_FILE) -split '\s+' | Where-Object { $_ } | Select-Object -First 1); if ($h -match '^[0-9a-fA-F]{40}$') { $h.ToLower() }"
 call :ps_run
@@ -379,7 +481,7 @@ if "%VERSION%"=="1.20.1" (
   set "XML_FILE=%TMP_DIR%\neoforge.xml"
   set "NEOFORGE_URL=%NEOFORGE_MAVEN%/neoforge/maven-metadata.xml"
 )
-curl.exe -fsSL --retry 3 -o "%XML_FILE%" "%NEOFORGE_URL%"
+curl.exe --proto "=https" --proto-redir "=https" -fsSL --retry 3 -o "%XML_FILE%" "%NEOFORGE_URL%"
 if errorlevel 1 call :die "Could not fetch NeoForge versions."
 set "MC_VERSION=%VERSION%"
 set "PS_EXPR=[xml]$x=Get-Content -Raw -LiteralPath $env:XML_FILE; $mc=$env:MC_VERSION; if ($mc -eq '1.20.1') { $p='1.20.1-' } elseif ($mc.StartsWith('1.')) { $b=$mc.Substring(2); if (-not $b.Contains('.')) { $b=$b+'.0' }; $p=$b+'.' } else { if (($mc -split '\.').Count -eq 3) { $p=$mc+'.' } else { $p=$mc+'.0.' } }; $v=@($x.metadata.versioning.versions.version | Where-Object { $_.StartsWith($p) -and $_ -notmatch '-(beta|alpha)|snapshot' }); if ($v.Count -gt 0) { $v | Sort-Object { [int](($_ -split '\.')[-1]) } | Select-Object -Last 1 }"
@@ -391,6 +493,7 @@ if "%ARTIFACT%"=="forge" (
 ) else (
   set "JAR_URL=%NEOFORGE_MAVEN%/neoforge/%NEOFORGE_VERSION%/neoforge-%NEOFORGE_VERSION%-installer.jar"
 )
+call :require_https "%JAR_URL%"
 set "JAR_NAME=%ARTIFACT%-%NEOFORGE_VERSION%-installer.jar"
 call :fetch_sha1 "%JAR_URL%"
 set "LOADER_DETAIL=NeoForge %NEOFORGE_VERSION%"
@@ -407,7 +510,7 @@ goto :eof
 
 :next_jdk_feature
 set "JDK_FEATURE="
-for %%F in (8 11 17 21 25) do (
+for %%F in (17 21 25) do (
   if not defined JDK_FEATURE if %%F GEQ %JAVA_REQUIRED% set "JDK_FEATURE=%%F"
 )
 if not defined JDK_FEATURE exit /b 1
@@ -415,7 +518,7 @@ exit /b 0
 
 :assess_java
 call :section "Java"
-if not defined JAVA_REQUIRED set "JAVA_REQUIRED=8"
+if not defined JAVA_REQUIRED set "JAVA_REQUIRED=17"
 set "JAVA_MODE=system"
 set "JAVA_BIN=java"
 set "JAVA_DETAIL="
@@ -435,7 +538,7 @@ if errorlevel 1 call :die "No local JDK is available for Java %JAVA_REQUIRED%+. 
 set "ANSWER="
 set /p "ANSWER=Download a local Temurin %JDK_FEATURE% JDK into the server folder? [y/N] "
 call :ps_yes
-if errorlevel 1 call :cancel
+if errorlevel 1 call :cancel "JDK download declined."
 goto :assess_local
 
 :assess_local
@@ -446,7 +549,6 @@ goto :eof
 :assess_ok
 set "JAVA_DETAIL=Java %SYS_JAVA_MAJOR% (system)"
 call :ok "Java %SYS_JAVA_MAJOR% detected (required: %JAVA_REQUIRED%+)."
-if %JAVA_REQUIRED% LEQ 8 if %SYS_JAVA_MAJOR% GTR 8 call :warn "Minecraft %VERSION% may require Java %JAVA_REQUIRED%; Java %SYS_JAVA_MAJOR% might not work."
 goto :eof
 
 :download_local_jdk
@@ -458,9 +560,11 @@ if /i "%ARCH_RAW%"=="AMD64" set "ARCH=x64"
 if /i "%ARCH_RAW%"=="ARM64" set "ARCH=aarch64"
 if not defined ARCH call :die "Unsupported architecture for JDK download: %ARCH_RAW%."
 call :section "Downloading Java %FEATURE%"
+call :log "Downloading local Temurin %FEATURE% JDK"
 set "API_URL=%ADOPTIUM_ASSETS_URL%/%FEATURE%/hotspot?architecture=%ARCH%&image_type=jdk&os=windows&vendor=eclipse"
+call :require_https "%API_URL%"
 set "JSON_FILE=%TMP_DIR%\adoptium-%FEATURE%.json"
-curl.exe -fsSL --retry 3 -o "%JSON_FILE%" "%API_URL%"
+curl.exe --proto "=https" --proto-redir "=https" -fsSL --retry 3 -o "%JSON_FILE%" "%API_URL%"
 if errorlevel 1 call :die "The Adoptium API is unreachable."
 set "PS_EXPR=$d=@(Get-Content -Raw -LiteralPath $env:JSON_FILE | ConvertFrom-Json); $p=($d | Where-Object { $_.binary.package.name -like '*.zip' } | Select-Object -First 1).binary.package; if (-not $p) { exit 1 }; $t=$env:TMP_DIR; [IO.File]::WriteAllText((Join-Path $t 'jdk-link.txt'), [string]$p.link); [IO.File]::WriteAllText((Join-Path $t 'jdk-checksum.txt'), [string]$p.checksum); [IO.File]::WriteAllText((Join-Path $t 'jdk-name.txt'), [string]$p.name); [IO.File]::WriteAllText((Join-Path $t 'jdk-size.txt'), [string]$p.size)"
 powershell -NoProfile -Command "Invoke-Expression $env:PS_EXPR"
@@ -478,7 +582,9 @@ if not defined JDK_SIZE set "JDK_SIZE=0"
 set /a SIZE_MB=%JDK_SIZE%/1048576
 set "ARCHIVE=%SERVER_DIR%\.jdk.zip"
 echo Downloading "%JDK_FILENAME%" (%SIZE_MB% MB)...
-curl.exe -fL --retry 3 --progress-bar -o "%ARCHIVE%" "%JDK_LINK%"
+call :log "Downloading %JDK_FILENAME% (%SIZE_MB% MB)"
+call :require_https "%JDK_LINK%"
+curl.exe --proto "=https" --proto-redir "=https" -fL --retry 3 --progress-bar -o "%ARCHIVE%" "%JDK_LINK%"
 if errorlevel 1 call :die "JDK download failed."
 set "FILE=%ARCHIVE%"
 set "PS_EXPR=(Get-FileHash -Algorithm SHA256 -LiteralPath $env:FILE).Hash.ToLower()"
@@ -509,6 +615,7 @@ set "JAVA_BIN=%LOCAL_JAVA_HOME%\home\bin\java.exe"
 if not exist "%JAVA_BIN%" call :die "The extracted JDK is invalid."
 set "JAVA_HOME=%LOCAL_JAVA_HOME%\home"
 set "PATH=%JAVA_HOME%\bin;%PATH%"
+call :log "Local JDK ready: %LOCAL_JAVA_HOME%\home"
 call :ok "JDK %FEATURE% installed in .jdk"
 goto :eof
 
@@ -524,6 +631,7 @@ echo   Max memory  %RAM_GB% GB
 echo   Java        %JAVA_DETAIL%
 echo   Source
 echo     "%JAR_URL%"
+call :log "Summary: name=%NAME% version=%VERSION% loader=%LOADER% detail=%LOADER_DETAIL% jar=%JAR_NAME% memory=%RAM_GB%GB java=%JAVA_DETAIL% source=%JAR_URL%"
 goto :eof
 
 :confirm
@@ -569,12 +677,44 @@ if errorlevel 1 call :die "Could not rename the Forge launch script."
 if not exist "run.bat" call :die "Could not create run.bat."
 goto :eof
 
+:usage
+echo Easy Minecraft Server Installer v%APP_VERSION%
+echo.
+echo Usage:
+echo   install-server.bat          Create a server interactively
+echo   install-server.bat --help   Show this help and exit
+echo.
+echo What it does:
+echo   Asks for a server name, Minecraft version, mod loader, and memory.
+echo   Downloads official files and creates a ready-to-run server folder.
+echo   Asks for EULA acceptance and writes a log in the server folder.
+echo.
+echo Options:
+echo   -h, --help, /?   Show this help and exit without changing anything.
+echo.
+echo Windows requirements:
+echo   Windows 10/11, curl.exe, PowerShell 5.1, and HTTPS access.
+echo   Java 17, 21, or 25, or let the installer download a local JDK.
+echo.
+echo Supported versions:
+echo   Minecraft 1.18.2 to 26.x, releases only.
+echo   Loaders: vanilla, fabric, forge, neoforge.
+echo.
+echo Output:
+echo   ^<server^>\run.bat
+echo   ^<server^>\install-server-^<server^>.log
+echo   ^<server^>\eula.txt ^(only after accepting the EULA^)
+echo   ^<server^>\.jdk ^(only when a local JDK is downloaded^)
+echo   Forge/NeoForge also create their own installer logs.
+endlocal
+exit /b 0
+
 :cleanup_ok
-if exist "%TMP_DIR%" rmdir /s /q "%TMP_DIR%" >nul 2>&1
+if defined TMP_DIR if exist "%TMP_DIR%" rmdir /s /q "%TMP_DIR%" >nul 2>&1
 endlocal
 exit 0
 
 :cleanup_fail
-if exist "%TMP_DIR%" rmdir /s /q "%TMP_DIR%" >nul 2>&1
+if defined TMP_DIR if exist "%TMP_DIR%" rmdir /s /q "%TMP_DIR%" >nul 2>&1
 endlocal
 exit 1
