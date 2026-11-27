@@ -11,6 +11,8 @@ chmod +x install-server.sh
 ./install-server.sh
 ```
 
+Show help without installing: `./install-server.sh --help`.
+
 Do not run as root; the installer refuses it.
 
 Windows:

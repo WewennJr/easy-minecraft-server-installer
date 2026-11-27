@@ -137,6 +137,49 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "'$1' is required but was not found."
 }
 
+usage() {
+  printf '%s v%s\n\n' "$APP_NAME" "$APP_VERSION"
+  printf '%s\n' \
+    'Usage:' \
+    '  ./install-server.sh          Create a server interactively' \
+    '  ./install-server.sh --help   Show this help and exit' \
+    '' \
+    'What it does:' \
+    '  Asks for a server name, Minecraft version, mod loader, and memory.' \
+    '  Downloads official files and creates a ready-to-run server folder.' \
+    '  On Linux, asks for EULA acceptance and writes a log in the server folder.' \
+    '' \
+    'Options:' \
+    '  -h, --help   Show this help and exit without changing anything.' \
+    '' \
+    'Linux requirements:' \
+    '  bash, curl, tar, a non-root user, and HTTPS access.' \
+    '  Java 17, 21, or 25, or let the installer download a local JDK.' \
+    '' \
+    'Supported versions:' \
+    '  Minecraft 1.18.2 to 26.x, releases only.' \
+    '  Loaders: vanilla, fabric, forge, neoforge.' \
+    '' \
+    'Output:' \
+    '  <server>/run.sh' \
+    '  <server>/install-server-<server>.log' \
+    '  <server>/eula.txt (only after accepting the EULA)' \
+    '  <server>/.jdk (only when a local JDK is downloaded)' \
+    '  Forge/NeoForge also create their own installer logs.'
+}
+
+case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  "")
+    ;;
+  *)
+    die "Unknown option: $1 (use --help)"
+    ;;
+esac
+
 if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
   die "Do not run this installer as root."
 fi
